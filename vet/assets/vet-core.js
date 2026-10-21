@@ -121,8 +121,26 @@ let ME = 'p-1';
 export function setMe(pid) { ME = pid || 'p-1'; }
 export function me() { return ME; }
 
+/* NF-1: estimates indexed by item and axis. The index belongs to the estimates array (a new array = a new index) and is
+   kept in step by setEstimate; touchEstimates() drops it after a change made around setEstimate. */
+const IDX = new WeakMap();
+let GEN = 0;
+export function touchEstimates() { GEN++; }
+const kOf = (itemId, axis) => itemId + '' + axis;
+function index(board) {
+  const est = board.estimates;
+  let c = IDX.get(est);
+  if (!c || c.len !== est.length || c.gen !== GEN) {
+    c = { len: est.length, gen: GEN, map: new Map() };
+    for (const e of est) { const k = kOf(e.itemId, e.axis); const l = c.map.get(k); if (l) l.push(e); else c.map.set(k, [e]); }
+    IDX.set(est, c);
+  }
+  return c;
+}
+const estimatesOf = (board, itemId, axis) => index(board).map.get(kOf(itemId, axis)) || [];
+
 export function estimateOf(board, itemId, axis, pid = ME) {
-  return board.estimates.find((e) => e.itemId === itemId && e.axis === axis && e.participantId === pid) || null;
+  return estimatesOf(board, itemId, axis).find((e) => e.participantId === pid) || null;
 }
 
 /** The facilitator's fixed final value of an item (MO-13), or null. */
@@ -133,7 +151,7 @@ export function finalOf(board, itemId, axis) {
 
 /** Spread of the participants' estimates (MO-12): { min, max, n } or null when nobody estimated. */
 export function spreadOf(board, itemId, axis) {
-  const vals = board.estimates.filter((e) => e.itemId === itemId && e.axis === axis && typeof e.value === 'number').map((e) => e.value);
+  const vals = estimatesOf(board, itemId, axis).filter((e) => typeof e.value === 'number').map((e) => e.value);
   if (!vals.length) return null;
   return { min: Math.min(...vals), max: Math.max(...vals), n: vals.length };
 }
@@ -152,7 +170,7 @@ export function needsDiscussion(board, itemId) {
 export function valueOf(board, itemId, axis) {
   const fixed = finalOf(board, itemId, axis);
   if (fixed !== null) return fixed;
-  const vals = board.estimates.filter((e) => e.itemId === itemId && e.axis === axis && typeof e.value === 'number').map((e) => e.value);
+  const vals = estimatesOf(board, itemId, axis).filter((e) => typeof e.value === 'number').map((e) => e.value);
   if (!vals.length) return null;
   if (vals.length === 1 || board.aggregation === 'facilitator') return vals[0];
   if (board.aggregation === 'mean') return vals.reduce((a, b) => a + b, 0) / vals.length;
@@ -162,10 +180,19 @@ export function valueOf(board, itemId, axis) {
 }
 
 export function setEstimate(board, itemId, axis, value, source = 'drag') {
-  const i = board.estimates.findIndex((e) => e.itemId === itemId && e.axis === axis && e.participantId === ME);
-  if (value === null || value === undefined || value === '') { if (i >= 0) board.estimates.splice(i, 1); return; }
+  const c = index(board), k = kOf(itemId, axis);
+  const list = c.map.get(k) || [];
+  const old = list.find((e) => e.participantId === ME) || null;
+  const i = old ? board.estimates.indexOf(old) : -1;
+  if (value === null || value === undefined || value === '') {
+    if (i >= 0) { board.estimates.splice(i, 1); list.splice(list.indexOf(old), 1); c.len = board.estimates.length; }
+    return;
+  }
   const e = { itemId, axis, participantId: ME, value: Number(value), source, updatedAt: new Date().toISOString() };
-  if (i >= 0) board.estimates[i] = { ...board.estimates[i], ...e }; else board.estimates.push(e);
+  if (i >= 0) { const ne = { ...old, ...e }; board.estimates[i] = ne; list[list.indexOf(old)] = ne; return; }
+  board.estimates.push(e);
+  if (list.length) list.push(e); else c.map.set(k, [e]);
+  c.len = board.estimates.length;
 }
 
 /** Axes the priority formula needs (DM-1). */
@@ -388,11 +415,18 @@ const HEAD = {
 };
 
 /** CSV / TSV with a header row (IO-4, IO-6, IO-9 incl. the reference tool's columns). */
-export function parseTable(text) {
+export function parseTable(text, map) {
   const sep = detectSep(text) || ',';
   const lines = text.replace(/^﻿/, '').split(/\r?\n/).filter((l) => l.trim());
-  if (!lines.length) return { rows: [], map: {} };
-  const head = splitLine(lines[0], sep).map((h) => h.toLowerCase().trim());
+  return parseGrid(lines.map((l) => splitLine(l, sep)), map);
+}
+
+/** Import fields a column can be mapped to (IO-4). */
+export const IMPORT_FIELDS = ['code', 'title', 'description', 'type', 'polarity', 'out', 'in', 'tags', 'external_id'];
+
+/** The automatic column map for a header row (IO-4, IO-9). */
+export function autoMap(header) {
+  const head = header.map((h) => String(h ?? '').toLowerCase().trim());
   const map = {};
   // reference tool (IO-9): Задача -> code, Описание -> title, Ценность -> out, Трудозатраты -> in
   const ref = head.includes('задача') && head.includes('описание');
@@ -400,10 +434,18 @@ export function parseTable(text) {
     if (ref) { const m = { 'задача': 'code', 'описание': 'title', 'ценность': 'out', 'трудозатраты': 'in' }[h]; if (m) map[m] = i; return; }
     for (const [k, names] of Object.entries(HEAD)) if (names.includes(h) && map[k] === undefined) { map[k] = i; break; }
   });
-  if (map.title === undefined && map.code === undefined) return { rows: [], map, error: 'no-columns' };
-  const rows = lines.slice(1).map((l, n) => {
-    const c = splitLine(l, sep);
-    const g = (k) => (map[k] === undefined ? '' : (c[map[k]] || '').trim());
+  return map;
+}
+
+/** Rows of cells (CSV or a spreadsheet sheet) -> import rows; the first row is the header. `map` overrides autoMap. */
+export function parseGrid(grid, map) {
+  grid = grid.filter((r) => r && r.some((x) => String(x ?? '').trim() !== ''));
+  if (!grid.length) return { rows: [], map: {}, header: [] };
+  const header = grid[0].map((x) => String(x ?? '').trim());
+  map = map || autoMap(header);
+  if (map.title === undefined && map.code === undefined) return { rows: [], map, header, error: 'no-columns' };
+  const rows = grid.slice(1).map((c, n) => {
+    const g = (k) => (map[k] === undefined ? '' : String(c[map[k]] ?? '').trim());
     const r = { code: g('code'), title: g('title') || g('code'), description: g('description'), type: g('type'), polarity: g('polarity'),
       out: num(g('out')), in: num(g('in')), tags: g('tags') ? g('tags').split('|').map((x) => x.trim()).filter(Boolean) : [], externalId: g('external_id'), line: n + 2 };
     r.errors = [];
@@ -412,7 +454,7 @@ export function parseTable(text) {
     if (Number.isNaN(r.in)) r.errors.push('in');
     return r;
   });
-  return { rows, map };
+  return { rows, map, header };
 }
 
 /** CSV cell, safe against formula injection (NF-7). */
@@ -448,6 +490,64 @@ export function configOf(board, withGoals = true) {
   for (const k of CONFIG_KEYS) c[k] = structuredClone(board[k]);
   if (withGoals) c.goals = structuredClone(board.goals);
   return c;
+}
+
+/** What applying `cfg` would change (IO-12), as a list of { key, axis?, n? } for the summary before applying. */
+export function configDiff(board, cfg) {
+  const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+  const out = [];
+  for (const key of ['out', 'in']) {
+    if (!cfg.axes || !cfg.axes[key]) continue;
+    const a = board.axes[key], b = mergeAxis(structuredClone(cfg.axes[key]), key);
+    if (!same(a.label, b.label) || (a.unit || '') !== (b.unit || '')) out.push({ key: 'label', axis: key });
+    if (!same(a.scale, b.scale) || !same(a.negative, b.negative)) {
+      const n = board.items.filter((it) => { const v = valueOf(board, it.id, key); return v !== null && Number.isFinite(v) && (v < b.scale.min || v > b.scale.max); }).length;
+      out.push({ key: 'scale', axis: key, n });
+    }
+    if (!same(a.buckets.map((x) => [x.label, x.from, x.to]), b.buckets.map((x) => [x.label, x.from, x.to]))) out.push({ key: 'buckets', axis: key });
+  }
+  if (Array.isArray(cfg.itemTypes) && cfg.itemTypes.length) {
+    const have = new Set(board.itemTypes.map((x) => x.id)), next = new Set(cfg.itemTypes.map((x) => x.id));
+    const added = cfg.itemTypes.filter((x) => !have.has(x.id)).length;
+    const removed = board.itemTypes.filter((x) => !next.has(x.id) && !board.items.some((it) => it.typeId === x.id)).length;
+    if (added || removed) out.push({ key: 'types', added, removed });
+  }
+  for (const k of ['priority', 'aggregation', 'view', 'lang']) if (cfg[k] !== undefined && !same(cfg[k], board[k])) out.push({ key: k });
+  if (cfg.settings && Object.keys(cfg.settings).some((k) => !same(cfg.settings[k], board.settings[k]))) out.push({ key: 'settings' });
+  if (Array.isArray(cfg.goals) && !same(cfg.goals, board.goals)) out.push({ key: 'goals', n: cfg.goals.length });
+  return out;
+}
+
+/** Spreadsheet rows (FMT-xlsx): items with numbers as numbers, the participants' estimates, goals. Header = CSV names. */
+export function itemRows(board, items, typeName) {
+  const n = (v) => (v === null || v === undefined ? '' : Number.isFinite(v) ? +v.toFixed(6) : v > 0 ? 'inf' : '-inf');
+  const rows = [['code', 'title', 'description', 'type', 'polarity', 'out', 'in', 'priority', 'bucket_out', 'bucket_in', 'tags', 'flow_id', 'goal_ids', 'external_id']];
+  for (const it of items) {
+    const o = valueOf(board, it.id, 'out'), i = valueOf(board, it.id, 'in');
+    rows.push([it.code, it.title, it.description || '', typeName(it.typeId), it.polarity, n(o), n(i), n(priorityOf(board, it).value),
+      bucketOf(board.axes.out, o)?.label || '', bucketOf(board.axes.in, i)?.label || '', (it.tags || []).join('|'), it.flowRef?.flowId || '', (it.goalIds || []).join('|'), it.externalId || '']);
+  }
+  return rows;
+}
+export function estimateRows(board, items) {
+  const code = new Map(items.map((it) => [it.id, it.code]));
+  const name = new Map((board.participants || []).map((p) => [p.id, p.displayName || p.id]));
+  return [['code', 'axis', 'participant', 'value', 'source', 'updated_at'],
+    ...board.estimates.filter((e) => code.has(e.itemId)).map((e) => [code.get(e.itemId), e.axis, name.get(e.participantId) || e.participantId, e.value, e.source || '', e.updatedAt || ''])];
+}
+export function goalRows(board) {
+  return [['id', 'title', 'desired_state', 'measure', 'parent_id', 'weight'],
+    ...(board.goals || []).map((g) => [g.id, g.title || '', g.desiredState || '', g.measure || '', g.parentId || '', g.weight ?? ''])];
+}
+
+/** The configuration JSON split into cells of at most 30 000 characters (the Excel cell limit is 32 767). */
+export const CONFIG_CELL = 'vet-config.json';
+export function configCells(cfg) { const s = JSON.stringify(cfg); const out = []; for (let i = 0; i < s.length; i += 30000) out.push(s.slice(i, i + 30000)); return out; }
+/** Finds the configuration JSON in a "Settings" sheet: rows whose first cell is CONFIG_CELL, parts joined in order. */
+export function configFromRows(rows) {
+  const parts = rows.filter((r) => String(r[0] ?? '').trim() === CONFIG_CELL).map((r) => r.slice(1).map((x) => String(x ?? '')).join(''));
+  if (!parts.length) return null;
+  try { const c = JSON.parse(parts.join('')); return c && c.kind === 'vet-config' ? c : null; } catch (e) { return null; }
 }
 
 export function itemsDoc(board, items) {

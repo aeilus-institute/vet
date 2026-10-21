@@ -4,13 +4,27 @@
 
 const root = document.getElementById('vet');
 const V = root.dataset.v || '1';
+if (root.dataset.theme) document.documentElement.setAttribute('data-tools-theme', root.dataset.theme); // dark | auto (packages); the site stays light
 const C = await import('./vet-core.js?v=' + V);
+const HP = await import('./vet-helpers.js?v=' + V); // references, metrics and formulas, goals (HP-*)
 const LANG = (document.documentElement.lang || 'en').slice(0, 2);
-const LOCALES = ['en', 'ru', 'uk', 'el', 'de', 'fr', 'es', 'pt', 'it', 'nl', 'pl', 'ro', 'sv', 'tr', 'ar', 'he', 'hi', 'zh', 'ja', 'ko']; // all site languages (I18N-1: one file per language)
-const LOC = LOCALES.includes(LANG) ? LANG : 'en';
-const STR = await fetch(new URL('./locales/' + LOC + '.json?v=' + V, import.meta.url)).then((r) => r.json()).catch(() => ({}));
+// I18N-1: the languages are the files in locales/; a page language without a file falls back to English
+const loadLoc = (l) => (/^[a-z]{2}$/.test(l) ? fetch(new URL('./locales/' + l + '.json?v=' + V, import.meta.url)).then((r) => (r.ok ? r.json() : null)).catch(() => null) : Promise.resolve(null));
+let STR = await loadLoc(LANG);
+const LOC = STR ? LANG : 'en';
+if (!STR) STR = (LANG === 'en' ? null : await loadLoc('en')) || {};
 const EN = LOC === 'en' ? STR : await fetch(new URL('./locales/en.json?v=' + V, import.meta.url)).then((r) => r.json()).catch(() => ({}));
 const plural = new Intl.PluralRules(LOC);
+
+/** A11Y-3: text colour for a bucket colour. The lighter stripe (78% colour + white) decides, so the label keeps 4.5:1 with its backing chip. */
+function inkOn(hex) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || '').trim());
+  if (!m) return 'light';
+  const lin = (c) => { c /= 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
+  const [r, g, b] = [0, 2, 4].map((i) => parseInt(m[1].slice(i, i + 2), 16) * 0.78 + 255 * 0.22);
+  const L = 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+  return L > 0.3 ? 'dark' : 'light';
+}
 
 function t(key, vars = {}) {
   let s = STR[key] ?? EN[key];
@@ -36,7 +50,9 @@ function h(tag, attrs = {}, ...kids) {
   return el;
 }
 const svgIcon = (d, size = 18) => { const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); s.setAttribute('viewBox', '0 0 24 24'); s.setAttribute('width', size); s.setAttribute('height', size); s.setAttribute('aria-hidden', 'true'); s.setAttribute('fill', 'none'); s.setAttribute('stroke', 'currentColor'); s.setAttribute('stroke-width', '2'); s.setAttribute('stroke-linecap', 'round'); s.setAttribute('stroke-linejoin', 'round'); s.innerHTML = d; return s; };
+const ICON_MORE = '<circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/>';
 const ICON = {
+  more: ICON_MORE,
   undo: '<path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/>', redo: '<path d="m15 14 5-5-5-5"/><path d="M20 9H9a5 5 0 0 0 0 10h3"/>',
   gear: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>',
   plus: '<path d="M12 5v14M5 12h14"/>', paste: '<rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>',
@@ -52,7 +68,8 @@ let board = C.newBoard('');
 const hist = new C.History(100);
 let selected = null;             // item id shown in the card
 let picked = new Set();          // rows ticked for bulk actions
-let filter = { q: '', types: null, bucket: null, onlyShown: false };
+let filter = { q: '', types: null, bucket: null, onlyShown: false, goal: null, refs: false };
+let goalsOpen = false;
 let dirty = false;
 let lastTypeId = null;
 let pendingScale = null;
@@ -61,6 +78,7 @@ const openStacks = new Set(); // axes where '+N' stacks are expanded
 const bridge = { on: (root.dataset.embed === 'vss' || root.dataset.embed === 'ledger') && window.parent !== window, requestId: null, flowRef: null, ledgerRef: null, ledgerTitle: '', fp: null, revision: 0, mappings: [], session: root.dataset.session || '', ret: root.dataset.return || '' };
 // Team mode (section 6.2): set up at the end of the file when the page names a board
 let team = null;
+let TV = null; // the institute's "Rate VET" and usage summary (vet-telemetry.js), only when the host asks for it (TV-6)
 let A = null; // aevri-api.js, loaded only when the server is needed (solo stays without network code, ARCH-3)
 const apiMod = async () => (A = A || await import(new URL('../../assets/aevri-api.js?v=' + V, import.meta.url).href));
 // Host settings (packages, DL-4): data-api = API base, data-signin = sign-in URL prefix, data-share="off" = no team mode
@@ -69,6 +87,27 @@ const SHARE = root.dataset.share !== 'off';
 const apiOf = async (id) => { const m = await apiMod(); return m.createApi({ base: root.dataset.api || '/api/v1', sessid: root.dataset.sessid || '', guest: () => (root.dataset.user || !id ? '' : m.guestStore.get(id)) }); };
 
 /** Where a marker stands for me: my own estimate while I can estimate, else the team value (median, fixed final). */
+/** Sets my estimate; a hand-made value on an axis with a formula is remembered as an override (HP-9). */
+function setEst(id, key, v, source) {
+  C.setEstimate(board, id, key, v, source);
+  if ((source === 'drag' || source === 'input') && HP.formulaOf(board, key) && (!team || team.canEdit)) {
+    const it = board.items.find((x) => x.id === id);
+    if (it) it.manual = { ...(it.manual || {}), [key]: true };
+  }
+}
+
+/** Puts the formula value of an item on the scales (HP-6); `force` also drops a manual override ("Back to formula"). */
+function applyFormula(it, force = false) {
+  for (const key of ['out', 'in']) {
+    const fv = HP.formulaValue(board, it, key);
+    if (!fv || fv.value === null) continue;
+    if (it.manual && it.manual[key] && !force) continue;
+    if (force && it.manual) { delete it.manual[key]; if (!Object.keys(it.manual).length) delete it.manual; }
+    const v = key === 'out' && it.polarity === 'anti' ? Math.min(0, fv.value) : fv.value; // EL-1; no clamp to the scale, autoscale follows
+    C.setEstimate(board, it.id, key, v, 'formula');
+  }
+}
+
 function myPos(id, key) {
   if (team && team.canEstimate) { const e = C.estimateOf(board, id, key); return e ? e.value : null; }
   return C.valueOf(board, id, key);
@@ -98,18 +137,21 @@ function change(fn, opts = {}) {
   render();
   if (team) team.queue(() => board);
   if (!opts.noScale) scheduleScale();
+  if (TV) TV.note('estimates');
 }
 function scheduleScale() {
   clearTimeout(pendingScale);
   if (team && !team.canEdit) return; // the scale belongs to the facilitator; values outside it stay at the edge (AX-7)
   pendingScale = setTimeout(() => {
+    let moved = false;
     for (const key of ['out', 'in']) {
       const b = C.autoscaleBounds(board, key);
       if (!b) continue;
+      moved = true;
       C.applyBounds(board.axes[key], b); // part of the same Undo step (AX-19 rule 6): no new snapshot
       if (b.expanded) toast(t('toast.expanded', { axis: axisName(key), max: C.fmtNum(b.max, LANG) }), () => undo());
     }
-    render();
+    if (moved) render();
   }, 500);
 }
 function undo() { const s = hist.undo(JSON.stringify(board)); if (s) { board = JSON.parse(s); render(); if (team) team.queue(() => board); } }
@@ -136,22 +178,47 @@ function btn(label, onClick, { icon, cls = '', title, disabled, pressed } = {}) 
   if (icon) b.append(svgIcon(ICON[icon]));
   if (label) b.append(h('span', { text: label }));
   if (icon && !label) b.setAttribute('aria-label', title || '');
+  if (icon && label) b.setAttribute('aria-label', label); // the label hides on phones (CSS), the name stays
   return b;
 }
 
+/** A selector for the focused element that survives a re-render (markers, chips, list links by item id). */
+function focusKey() {
+  const el = document.activeElement;
+  if (!el || !root.contains(el) || !el.dataset) return null;
+  const host = el.closest('[data-id]');
+  if (!host) return null;
+  const cls = [...host.classList].find((c) => /^vet-(marker|pmarker|chip|ref)$/.test(c));
+  const area = host.closest('.vet-scale[data-axis], .vet-plane, .vet-tray, .vet-table');
+  const where = area ? (area.dataset.axis ? `.vet-scale[data-axis="${area.dataset.axis}"] ` : area.classList.contains('vet-plane') ? '.vet-plane ' : area.classList.contains('vet-table') ? '.vet-table ' : '') : '';
+  if (host.tagName === 'TR') return `${where}tr[data-id="${host.dataset.id}"] ${el.tagName.toLowerCase()}${el.type === 'checkbox' ? '[type=checkbox]' : '.vet-link'}`;
+  return cls ? `${where}.${cls}[data-id="${host.dataset.id}"]` : null;
+}
+
 function render() {
+  const fk = focusKey();
+  renderAll();
+  if (fk) root.querySelector(fk)?.focus({ preventScroll: true });
+}
+
+function renderAll() {
   renderBar();
   renderNotice();
   renderStart();
+  renderCard(); // before the scales: the card takes width, and the marker lanes are measured on the final width
   renderScales();
-  renderCard();
   renderList();
 }
 
-/** Solo: "data is not saved". Team: role, mode, save state and who is here (MO-6, MO-9). */
+/** Solo: one quiet line about where the data lives, with the two ways to keep it. Team: role, mode, save state and who is here (MO-6, MO-9). */
 function renderNotice() {
   ui.notice.classList.toggle('is-team', !!team);
-  if (!team) { ui.notice.textContent = t('notice.solo'); return; }
+  if (!team && (bridge.on || bridge.session)) { ui.notice.replaceChildren(); return; } // in VSS or the wallet the result goes back to the host
+  if (!team) {
+    const keep = [btn(t('export'), () => openExport(), { cls: 'vet-link-btn' }), !bridge.on && !bridge.session && SHARE ? btn(t('share'), () => shareSolo(), { cls: 'vet-link-btn' }) : null].filter(Boolean);
+    ui.notice.replaceChildren(h('span', { class: 'vet-dot', 'aria-hidden': 'true' }), h('span', { text: t('notice.soloShort') }), ...keep);
+    return;
+  }
   const st = team.status;
   const state = h('span', { class: 'vet-save is-' + st, text: t('team.status.' + st) + (st === 'saved' && team.savedAt ? ' ' + team.savedAt.toLocaleTimeString(LOC, { hour: '2-digit', minute: '2-digit' }) : '') });
   const people = h('span', { class: 'vet-people' }, (team.view.participants || []).slice(0, 12).map((p) => h('span', {
@@ -166,6 +233,36 @@ function renderNotice() {
 const initials = (n) => String(n || '?').trim().split(/\s+/).slice(0, 2).map((x) => x[0] || '').join('').toUpperCase() || '?';
 const localHref = (p) => { const m = location.pathname.match(/^\/([a-z]{2})\//); return m ? '/' + m[1] + p : p; };
 
+/** A menu button with arrow keys, Home / End and Escape. items: [label, fn, { icon, danger }] or null. */
+function menuButton(label, items, { icon = 'more' } = {}) {
+  items = items.filter(Boolean);
+  const list = h('div', { class: 'vet-menu', role: 'menu', hidden: true });
+  const b = btn(label, () => toggle(), { icon });
+  b.setAttribute('aria-haspopup', 'menu'); b.setAttribute('aria-expanded', 'false');
+  const all = () => [...list.querySelectorAll('[role=menuitem]:not([disabled])')];
+  const close = (focus) => { list.hidden = true; b.setAttribute('aria-expanded', 'false'); document.removeEventListener('pointerdown', outside, true); if (focus) b.focus(); };
+  const outside = (e) => { if (!wrap.contains(e.target)) close(false); };
+  const toggle = (first) => {
+    if (!list.hidden) { close(false); return; }
+    list.hidden = false; b.setAttribute('aria-expanded', 'true');
+    document.addEventListener('pointerdown', outside, true);
+    if (first) all()[0]?.focus();
+  };
+  for (const [text, fn, o = {}] of items) list.append(h('button', { type: 'button', role: 'menuitem', class: 'vet-menu-item' + (o.danger ? ' is-danger' : ''), disabled: o.disabled ? true : null,
+    onclick: () => { close(true); fn(); } }, o.icon ? svgIcon(ICON[o.icon], 16) : null, h('span', { text })));
+  b.addEventListener('keydown', (e) => { if (e.key === 'ArrowDown') { e.preventDefault(); if (list.hidden) toggle(true); else all()[0]?.focus(); } });
+  list.addEventListener('keydown', (e) => {
+    const l = all(), i = l.indexOf(document.activeElement);
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(true); }
+    else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); l[(i + (e.key === 'ArrowDown' ? 1 : -1) + l.length) % l.length]?.focus(); }
+    else if (e.key === 'Home' || e.key === 'End') { e.preventDefault(); (e.key === 'Home' ? l[0] : l[l.length - 1])?.focus(); }
+    else if (e.key === 'Tab') close(false);
+  });
+  const wrap = h('div', { class: 'vet-menu-wrap' }, b, list);
+  return wrap;
+}
+
+/** Toolbar (UX refactoring): title | Add, Paste | 1D/2D | Undo, Redo ... Export, Share, More. */
 function renderBar() {
   const ro = team && !team.canEdit;
   const title = h('input', { class: 'vet-title', value: board.title, placeholder: t('board.untitled'), 'aria-label': t('board.title'), maxlength: '120', readonly: ro || null,
@@ -173,30 +270,71 @@ function renderBar() {
   const view = h('div', { class: 'vet-seg', role: 'group', 'aria-label': t('view.label') },
     btn('1D', () => change(() => { board.view = '1d'; }, { noScale: true }), { pressed: board.view === '1d' }),
     btn('2D', () => change(() => { board.view = '2d'; }, { noScale: true }), { pressed: board.view === '2d' }));
-  ui.bar.replaceChildren(
-    title, view,
-    btn('', undo, { icon: 'undo', title: t('undo') + ' (Ctrl+Z)', disabled: !hist.past.length }),
-    btn('', redo, { icon: 'redo', title: t('redo') + ' (Ctrl+Shift+Z)', disabled: !hist.future.length }),
+  const share = bridge.on || bridge.session ? null : team ? (team.role === 'facilitator' ? btn(t('share'), () => openShare(), { icon: 'share' }) : null)
+    : SHARE ? btn(t('share'), () => shareSolo(), { icon: 'share' }) : null;
+  const more = menuButton(t('more'), [
+    ro ? null : [t('import'), () => openImport(), { icon: 'upload' }],
+    team && !team.canEstimate ? null : [t('flow.start'), () => openFlow(), { icon: 'play', disabled: !board.items.length }],
+    ro ? null : [t('settings'), () => openSettings(), { icon: 'gear' }],
+    [t('csv.quick'), () => { download(C.toCSV(board, C.sortedItems(board), (id) => typeName(id)), C.fileName(board, 'csv'), 'text/csv'); if (TV) TV.note('export'); }, { icon: 'download' }],
+    [t('keys.title'), openKeys],
+    ro || !board.items.length ? null : [t('clear'), () => confirmBox(t('clear.ask'), t('clear'), clearBoard), { icon: 'trash', danger: true }],
+  ]);
+  ui.bar.replaceChildren(...[ // replaceChildren would print a null as text
+    title,
+    ro ? null : h('div', { class: 'vet-group' }, btn(t('add.short'), () => openAdd(), { icon: 'plus', cls: 'vet-btn-primary' }), btn(t('paste.short'), () => openPaste(), { icon: 'paste' })),
+    view,
+    h('div', { class: 'vet-group' }, btn('', undo, { icon: 'undo', title: t('undo') + ' (Ctrl+Z)', disabled: !hist.past.length }),
+      btn('', redo, { icon: 'redo', title: t('redo') + ' (Ctrl+Shift+Z)', disabled: !hist.future.length })),
     h('span', { class: 'vet-grow' }),
-    team && !team.canEstimate ? null : btn(t('flow.start'), () => openFlow(), { icon: 'play', disabled: !board.items.length }),
-    ro ? null : btn(t('import'), () => openImport(), { icon: 'upload' }),
     btn(t('export'), () => openExport(), { icon: 'download' }),
-    ro ? null : btn('', () => openSettings(), { icon: 'gear', title: t('settings') }),
-    bridge.on || bridge.session ? null : team ? (team.role === 'facilitator' ? btn(t('share'), () => openShare(), { icon: 'share', cls: 'vet-btn-primary' }) : null)
-      : SHARE ? btn(t('share'), () => shareSolo(), { icon: 'share', cls: 'vet-btn-ghost' }) : null,
-  );
+    share, more,
+  ].filter(Boolean));
   if (bridge.flowRef || bridge.ledgerRef) ui.bar.prepend(bridgeBanner());
 }
 
+/** Keyboard shortcuts in one place (UX review). */
+function openKeys() {
+  const rows = ['keys.marker', 'keys.bucket', 'keys.plane', 'keys.delete', 'keys.tray', 'keys.flow', 'keys.undo', 'keys.add', 'keys.menu'].map((k) => {
+    const [key, what] = t(k).split(' | ');
+    return h('tr', {}, h('td', {}, h('kbd', { text: key })), h('td', { text: what || '' }));
+  });
+  const d = dialog(t('keys.title'), h('table', { class: 'vet-table is-small vet-keys' }, h('tbody', {}, rows)), [btn(t('close'), () => d.closeNow(), { cls: 'vet-btn-primary' })]);
+}
+
+function clearBoard() {
+  change(() => {
+    board.items = []; board.estimates = []; picked.clear(); selected = null;
+    for (const key of ['out', 'in']) if (!board.axes[key].autoscale.manual) { const ax = board.axes[key]; const old = { ...ax.scale }; ax.scale.max = Math.max(ax.autoscale.minLength, 10 * ax.scale.step); if (ax.scale.min < 0) ax.scale.min = -ax.scale.max / 2; C.rebuildBuckets(ax, old); }
+  });
+}
+
+/** Empty board: three steps to the first ranking, a start from a template, the file or a sample (onboarding). */
 function renderStart() {
   ui.start.replaceChildren();
-  if (board.items.length || root.dataset.started || bridge.on || (team && !team.canEdit)) return;
-  const tpl = (key, fn) => btn(t('tpl.' + key), () => { root.dataset.started = '1'; fn(); });
-  ui.start.append(h('span', { text: t('tpl.start') }),
-    tpl('empty', () => render()),
-    tpl('effortMoney', () => change(() => preset('effortMoney'), { noScale: true })),
-    tpl('valueEffort', () => change(() => preset('valueEffort'), { noScale: true })),
-    tpl('import', () => openImport()));
+  if (board.items.length || bridge.on || (team && !team.canEdit)) return;
+  const tpl = h('select', { 'aria-label': t('tpl.start'), onchange: (e) => { const k = e.target.value; if (k) change(() => preset(k), { noScale: true }); } },
+    h('option', { value: '', text: t('tpl.start') }), ['valueEffort', 'effortMoney', 'moneyMoney', 'riskBenefit'].map((k) => h('option', { value: k, text: t('preset.' + k) })));
+  ui.start.append(h('div', { class: 'vet-start-card' },
+    h('h2', { class: 'vet-h2', text: t('start.title') }),
+    h('ol', { class: 'vet-steps' }, ['start.s1', 'start.s2', 'start.s3'].map((k) => h('li', { text: t(k) }))),
+    h('div', { class: 'vet-row' }, btn(t('add.short'), () => openAdd(), { icon: 'plus', cls: 'vet-btn-primary' }), btn(t('paste.open'), () => openPaste(), { icon: 'paste' }),
+      btn(t('start.sample'), loadSample), tpl, btn(t('tpl.import'), () => openImport(), { icon: 'upload', cls: 'vet-btn-ghost' }), btn(t('tpl.refs'), () => openAdd({ asRef: true }), { cls: 'vet-btn-ghost' }))));
+}
+
+/** A small sample board to see the idea at once (onboarding). */
+function loadSample() {
+  change(() => {
+    preset('valueEffort');
+    const taken = new Set();
+    t('start.sampleItems').split('\n').forEach((line) => {
+      const [title, o, i] = line.split(';').map((x) => x.trim());
+      if (!title) return;
+      const it = C.makeItem(board, { title, taken }); taken.add(it.code); board.items.push(it);
+      setEst(it.id, 'out', Number(o), 'input'); setEst(it.id, 'in', Number(i), 'input');
+    });
+  });
+  toast(t('start.sampleDone'), () => undo());
 }
 
 function preset(key) { // AX-3
@@ -222,7 +360,19 @@ function visibleItems() {
     && (!filter.types || filter.types.has(it.typeId))
     && (!q || String(it.code).toLowerCase().includes(q) || it.title.toLowerCase().includes(q))
     && (!filter.discuss || !team || C.needsDiscussion(board, it.id))
+    && (!filter.goal || (filter.goal === 'none' ? !(it.goalIds || []).some((g) => HP.goalById(board, g)) : (it.goalIds || []).some((g) => goalSet().has(g))))
     && (!filter.bucket || C.bucketOf(board.axes[filter.bucket.axis], C.valueOf(board, it.id, filter.bucket.axis))?.id === filter.bucket.id));
+}
+
+const goalSet = () => (filter.goal && filter.goal !== 'none' ? HP.goalSubtree(board, filter.goal) : new Set());
+const refItems = () => board.items.filter((it) => it.isReference);
+const showRefs = () => board.settings.showRefs !== false;
+
+/** A reference on a scale or the plane (HP-2): outlined, pinned, not draggable; the title shows where it came from. */
+function refMarker(it, style) {
+  return h('button', { type: 'button', class: 'vet-ref' + (selected === it.id ? ' is-selected' : ''), style, dataset: { id: it.id },
+    title: `${t('ref.one')} · ${it.code}: ${it.title}${it.refNote ? '\n' + it.refNote : ''}`, 'aria-label': `${t('ref.one')} ${it.code} ${it.title}`,
+    onclick: () => select(it.id) }, h('span', { text: '◆ ' + it.code }));
 }
 
 function renderScales() {
@@ -249,8 +399,8 @@ function scale1d(key, items) {
     } });
   const dbl = Math.min(C.MAX_ABS, s.max * 2);
   const tray = items.filter((it) => myPos(it.id, key) === null);
-  wrap.append(h('div', { class: 'vet-scale-head' }, name, h('span', { class: 'vet-grow' }),
-    s.type === 'list' ? null : btn(t('axis.double', { max: C.fmtNum(dbl, LANG) }), () => change(() => {
+  wrap.append(h('div', { class: 'vet-scale-head' }, name, h('span', { class: 'vet-scale-range', text: t('axis.range', { min: C.fmtNum(s.min, LANG), max: C.fmtNum(s.max, LANG) }) }), h('span', { class: 'vet-grow' }),
+    s.type === 'list' || (team && !team.canEdit) ? null : btn(t('axis.extend', { max: C.fmtNum(dbl, LANG) }), () => change(() => {
       const old = { ...s }; s.max = dbl; axis.autoscale.manual = true; C.rebuildBuckets(axis, old);
     }, { noScale: true }), { cls: 'vet-btn-sm', title: t('axis.doubleHint'), disabled: s.max >= C.MAX_ABS })));
   if (axis.autoscale.manual) wrap.append(h('p', { class: 'vet-hint' }, t('axis.autoOff') + ' ', h('button', { type: 'button', class: 'vet-link', text: t('axis.autoOn'),
@@ -288,7 +438,7 @@ function scale1d(key, items) {
     const r = pct(axis, b.to) + (50 / ((s.max - s.min) / s.step + 1));
     const count = items.filter((it) => C.bucketOf(axis, myPos(it.id, key))?.id === b.id).length;
     const active = filter.bucket && filter.bucket.axis === key && filter.bucket.id === b.id;
-    band.append(h('button', { type: 'button', class: 'vet-bucket' + (b.polarity === 'anti' ? ' is-anti' : '') + (active ? ' is-active' : ''), style: { left: l + '%', width: Math.max(0, r - l) + '%', '--c': b.color },
+    band.append(h('button', { type: 'button', class: 'vet-bucket ink-' + inkOn(b.color) + (b.polarity === 'anti' ? ' is-anti' : '') + (active ? ' is-active' : ''), style: { left: l + '%', width: Math.max(0, r - l) + '%', '--c': b.color },
       title: t('bucket.filter', { name: b.label }), 'aria-pressed': String(!!active),
       onclick: () => { filter.bucket = active ? null : { axis: key, id: b.id }; render(); } },
       h('span', { class: 'vet-bucket-name', text: b.label }), count ? h('span', { class: 'vet-bucket-count', text: String(count) }) : null));
@@ -298,15 +448,22 @@ function scale1d(key, items) {
   // ticks and bucket boundaries (AX-18)
   const tk = h('div', { class: 'vet-ticks' + (board.settings.bucketsOnly ? ' is-hidden' : '') });
   const shown = new Set();
-  for (const v of C.ticks(s, Math.max(4, Math.floor((root.clientWidth || 800) / 90)))) { shown.add(v); tk.append(h('span', { style: { left: pct(axis, v) + '%' }, text: C.fmtNum(v, LANG) })); }
-  const near = (v) => [...shown].some((x) => Math.abs(pct(axis, x) - pct(axis, v)) < 3.5);
-  for (const b of axis.buckets) for (const v of [b.from]) if (!shown.has(v) && !near(v)) { shown.add(v); tk.append(h('span', { class: 'is-edge', style: { left: pct(axis, v) + '%' }, text: C.fmtNum(v, LANG) })); }
+  const tv = C.ticks(s, Math.max(4, Math.floor((ui.scales.clientWidth || root.clientWidth || 800) / 90)));
+  if (!tv.includes(s.min) && (!tv.length || pct(axis, tv[0]) - pct(axis, s.min) > 4)) tv.unshift(s.min); // the scale start is always labelled
+  for (const v of tv) { shown.add(v); tk.append(h('span', { style: { left: pct(axis, v) + '%' }, text: C.fmtNum(v, LANG) })); }
+  // bucket edges are not added as numbers: the band shows them (UX review, the row looked irregular)
   track.append(tk);
   if (team && team.othersVisible && selected && items.some((x) => x.id === selected)) track.append(...peers(selected, key));
+  if (showRefs()) for (const it of refItems()) { const v = C.valueOf(board, it.id, key); if (v !== null && Number.isFinite(v)) track.append(refMarker(it, { left: pct(axis, v) + '%', top: '4px' })); }
+  for (const it of items) { // HP-9: where the formula would put an item that was moved by hand
+    if (!it.manual || !it.manual[key]) continue;
+    const fv = HP.formulaValue(board, it, key);
+    if (fv && fv.value !== null && fv.value !== myPos(it.id, key)) track.append(h('span', { class: 'vet-fghost', style: { left: pct(axis, fv.value) + '%' }, title: t('hp.formulaHere', { code: it.code }) }));
+  }
   // markers
   for (const p of placed) {
     if (p.more) track.append(h('button', { type: 'button', class: 'vet-more', style: { left: pct(axis, p.v) + '%', bottom: (64 + p.lane * 30) + 'px' }, text: '+' + (p.more.length - 4),
-      title: p.more.slice(4).map((x) => x.code).join(', '), onclick: () => { openStacks.add(key); renderScales(); } }));
+      'aria-haspopup': 'dialog', title: p.more.slice(4).map((x) => x.code).join(', '), onclick: (e) => stackChooser(e.currentTarget, p.more, key, p.v) }));
     else track.append(marker(p.it, key, p.v, p.lane));
   }
   wrap.append(track);
@@ -324,10 +481,10 @@ function marker(it, key, v, stackIndex) {
     type: 'button', role: 'slider', class: 'vet-marker' + (it.polarity === 'anti' ? ' is-anti' : '') + (selected === it.id ? ' is-selected' : '') + (out ? ' is-out' : ''),
     style: { left: pct(axis, v) + '%', bottom: (64 + stackIndex * 30) + 'px', '--t': ty.color, '--b': b ? b.color : '#8a9a97', '--lane': String(stackIndex) },
     'aria-valuemin': String(axis.scale.min), 'aria-valuemax': String(axis.scale.max), 'aria-valuenow': String(myPos(it.id, key)),
-    'aria-valuetext': `${axisName(key)} ${C.fmtNum(myPos(it.id, key), LANG, false)}${b ? ', ' + b.label : ''}, ${it.code} ${it.title}`,
+    'aria-valuetext': `${axisName(key)} ${C.fmtNum(myPos(it.id, key), LANG, false)}${b ? ', ' + b.label : ''}, ${it.code} ${it.title}${it.manual && it.manual[key] ? ', ' + t('hp.manual') : ''}`,
     title: `${it.code}: ${it.title}\n${axisName(key)}: ${C.fmtNum(myPos(it.id, key), LANG, false)}${b ? ' (' + b.label + ')' : ''}${out ? '\n' + t('outOfScale') : ''}`,
     dataset: { id: it.id },
-  }, h('span', { class: 'vet-marker-code', text: (it.polarity === 'anti' ? '−' : '') + it.code }));
+  }, h('span', { class: 'vet-marker-code', text: (it.manual && it.manual[key] ? '✋ ' : '') + (it.polarity === 'anti' ? '−' : '') + it.code }));
   m.addEventListener('click', () => select(it.id));
   m.addEventListener('keydown', (e) => markerKey(e, it, key));
   dragMarker(m, it, key);
@@ -347,11 +504,11 @@ function markerKey(e, it, key, otherKey) {
   } else if (otherKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
     markerKey({ ...e, key: e.key === 'ArrowUp' ? 'ArrowRight' : 'ArrowLeft', preventDefault: () => e.preventDefault() }, it, otherKey);
     return;
-  } else if (e.key === 'Delete' || e.key === 'Backspace') { change(() => C.setEstimate(board, it.id, key, null)); return; }
+  } else if (e.key === 'Delete' || e.key === 'Backspace') { change(() => setEst(it.id, key, null)); return; }
   else return;
   e.preventDefault();
   nv = clampFor(it, key, nv);
-  change(() => C.setEstimate(board, it.id, key, nv, 'input'));
+  change(() => setEst(it.id, key, nv, 'input'));
   requestAnimationFrame(() => root.querySelector(`.vet-scale[data-axis="${key}"] .vet-marker[data-id="${it.id}"], .vet-plane .vet-marker[data-id="${it.id}"]`)?.focus());
 }
 
@@ -389,19 +546,52 @@ function dragMarker(m, it, key) {
       m.title = String(val);
       ui.live.textContent = `${it.code}: ${C.fmtNum(val, LANG, false)}`;
       updateRowValue(it.id, key, val);
+      refHint(track, key, val);
       const overTray = wrap.querySelector('.vet-tray')?.getBoundingClientRect();
       m.classList.toggle('is-remove', !!overTray && ev.clientY > overTray.top);
     };
     const up = (ev) => {
       m.removeEventListener('pointermove', move); m.removeEventListener('pointerup', up); m.removeEventListener('pointercancel', up);
       if (team) team.busy = false;
+      refHint(track, key, null);
       if (!moved) return;
       const overTray = wrap.querySelector('.vet-tray')?.getBoundingClientRect();
-      if (overTray && ev.clientY > overTray.top) change(() => C.setEstimate(board, it.id, key, null));
-      else change(() => C.setEstimate(board, it.id, key, val, 'drag'));
+      if (overTray && ev.clientY > overTray.top) change(() => setEst(it.id, key, null));
+      else change(() => setEst(it.id, key, val, 'drag'));
     };
     m.addEventListener('pointermove', move); m.addEventListener('pointerup', up); m.addEventListener('pointercancel', up);
   });
+}
+
+/** HP-4: "more than X, less than Y" next to the marker being dragged, the two references highlighted. */
+function refHint(track, key, v) {
+  track.querySelectorAll('.vet-ref.is-near').forEach((x) => x.classList.remove('is-near'));
+  track.querySelector('.vet-refhint')?.remove();
+  if (v === null || !refItems().length) return;
+  const { below, above } = HP.nearestRefs(board, key, v, C.valueOf);
+  if (!below && !above) return;
+  [below, above].filter(Boolean).forEach((r) => track.querySelector(`.vet-ref[data-id="${r.it.id}"]`)?.classList.add('is-near'));
+  const txt = [below ? t('hp.moreThan', { code: below.it.code }) : '', above ? t('hp.lessThan', { code: above.it.code }) : ''].filter(Boolean).join(', ');
+  track.append(h('span', { class: 'vet-refhint', style: { left: pct(board.axes[key], v) + '%' }, text: txt }));
+  ui.live.textContent += ' · ' + txt;
+}
+
+/** A crowded value: a small list of all its items instead of growing the whole axis (UX review, wave 2). */
+function stackChooser(anchor, list, key, v) {
+  document.querySelector('.vet-stack-pop')?.remove();
+  const close = () => { pop.remove(); document.removeEventListener('pointerdown', outside, true); anchor.focus(); };
+  const outside = (e) => { if (!pop.contains(e.target) && e.target !== anchor) close(); };
+  const pop = h('div', { class: 'vet-stack-pop', role: 'dialog', 'aria-label': t('stack.title', { n: list.length, v: C.fmtNum(v, LANG, false) }) },
+    h('strong', { text: t('stack.title', { n: list.length, v: C.fmtNum(v, LANG, false) }) }),
+    h('ul', {}, list.map((it) => h('li', {}, h('button', { type: 'button', class: 'vet-link', text: `${it.polarity === 'anti' ? '−' : ''}${it.code} · ${it.title}`, onclick: () => { close(); select(it.id); } })))),
+    h('div', { class: 'vet-row' }, btn(t('stack.expand'), () => { close(); openStacks.add(key); renderScales(); }, { cls: 'vet-btn-sm' }), btn(t('close'), close, { cls: 'vet-btn-sm' })));
+  pop.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); close(); } });
+  const r = anchor.getBoundingClientRect();
+  pop.style.left = Math.min(window.innerWidth - 300, Math.max(8, r.left)) + 'px';
+  pop.style.top = (r.bottom + 6) + 'px';
+  document.body.append(pop);
+  document.addEventListener('pointerdown', outside, true);
+  pop.querySelector('button')?.focus();
 }
 
 function updateRowValue(id, key, v) {
@@ -421,9 +611,18 @@ function trayEl(key, list) {
 function chip(it, key) {
   const ty = C.typeById(board, it.typeId);
   const c = h('button', { type: 'button', class: 'vet-chip' + (it.polarity === 'anti' ? ' is-anti' : '') + (selected === it.id ? ' is-selected' : ''), style: { '--t': ty.color },
-    title: `${it.code}: ${it.title}`, dataset: { id: it.id } }, h('b', { text: (it.polarity === 'anti' ? '−' : '') + it.code }), h('span', { text: it.title }));
+    title: `${it.code}: ${it.title}\n${t('chip.keys')}`, 'aria-keyshortcuts': 'ArrowLeft ArrowRight Home End Shift+Enter', dataset: { id: it.id } }, h('b', { text: (it.polarity === 'anti' ? '−' : '') + it.code }), h('span', { text: it.title }));
   c.addEventListener('click', () => select(it.id));
-  c.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.shiftKey) { e.preventDefault(); openFlow(key === '2d' ? 'out' : key, it.id); } });
+  c.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && e.shiftKey) { e.preventDefault(); openFlow(key === '2d' ? 'out' : key, it.id); return; }
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key) || (team && !team.canEstimate)) return;
+    e.preventDefault(); // UI-1 without a mouse: the item goes onto the scale and keeps the focus, arrows then move it
+    const at = (k) => { const s = board.axes[k].scale; const mid = C.roundTo((s.min + s.max) / 2, s.step); return clampFor(it, k, e.key === 'Home' ? s.min : e.key === 'End' ? s.max : mid); };
+    const keys = key === '2d' ? [xKey(), yKey()] : [key];
+    selected = it.id;
+    change(() => keys.forEach((k) => { if (myPos(it.id, k) === null) setEst(it.id, k, at(k), 'input'); }));
+    requestAnimationFrame(() => root.querySelector(key === '2d' ? `.vet-plane .vet-marker[data-id="${it.id}"]` : `.vet-scale[data-axis="${key}"] .vet-marker[data-id="${it.id}"]`)?.focus());
+  });
   c.addEventListener('pointerdown', (e) => {
     if (e.button !== 0) return;
     let ghost = null;
@@ -438,11 +637,11 @@ function chip(it, key) {
       const el = document.elementFromPoint(ev.clientX, ev.clientY);
       if (key === '2d') {
         const pl = el && el.closest('.vet-plane-area');
-        if (pl) { const [vx, vy] = planeValue(pl, ev.clientX, ev.clientY); change(() => { C.setEstimate(board, it.id, xKey(), clampFor(it, xKey(), vx), 'drag'); C.setEstimate(board, it.id, yKey(), clampFor(it, yKey(), vy), 'drag'); }); }
+        if (pl) { const [vx, vy] = planeValue(pl, ev.clientX, ev.clientY); change(() => { setEst(it.id, xKey(), clampFor(it, xKey(), vx), 'drag'); setEst(it.id, yKey(), clampFor(it, yKey(), vy), 'drag'); }); }
         return;
       }
       const track = el && el.closest(`.vet-scale[data-axis="${key}"] .vet-track`);
-      if (track) change(() => C.setEstimate(board, it.id, key, clampFor(it, key, valueAt(key, ev.clientX, track)), 'drag'));
+      if (track) change(() => setEst(it.id, key, clampFor(it, key, valueAt(key, ev.clientX, track)), 'drag'));
     };
     document.addEventListener('pointermove', move); document.addEventListener('pointerup', up);
   });
@@ -477,6 +676,10 @@ function plane(items) {
   area.append(h('span', { class: 'vet-quad q-tl', text: q.tl || t(swap ? 'quad.fill' : 'quad.dont') }), h('span', { class: 'vet-quad q-tr', text: q.tr || t(swap ? 'quad.wins' : 'quad.bets') }),
     h('span', { class: 'vet-quad q-bl', text: q.bl || t(swap ? 'quad.dont' : 'quad.fill') }), h('span', { class: 'vet-quad q-br', text: q.br || t(swap ? 'quad.bets' : 'quad.wins') }));
   area.append(h('div', { class: 'vet-mid-x' }), h('div', { class: 'vet-mid-y' }));
+  if (showRefs()) for (const it of refItems()) {
+    const rx = C.valueOf(board, it.id, xKey()), ry = C.valueOf(board, it.id, yKey());
+    if (rx !== null && ry !== null && Number.isFinite(rx) && Number.isFinite(ry)) area.append(refMarker(it, { left: pct(X, rx) + '%', bottom: pct(Y, ry) + '%', transform: 'translate(-50%, 50%)' }));
+  }
   if (X.scale.min < 0) area.append(h('div', { class: 'vet-zero', style: { left: pct(X, 0) + '%' } }));
   if (Y.scale.min < 0) area.append(h('div', { class: 'vet-zero-y', style: { bottom: pct(Y, 0) + '%' } }));
   const seen = new Map();
@@ -493,6 +696,8 @@ function plane(items) {
     }
     const m = h('button', { type: 'button', role: 'slider', class: 'vet-marker vet-pmarker' + (it.polarity === 'anti' ? ' is-anti' : '') + (selected === it.id ? ' is-selected' : ''),
       style: { left: `calc(${left}% + ${n * 6}px)`, bottom: `calc(${bottom}% + ${n * 6}px)`, '--t': ty.color, '--b': bx ? bx.color : '#8a9a97' }, dataset: { id: it.id },
+      'aria-label': `${it.code} ${it.title}`, 'aria-orientation': 'horizontal', 'aria-keyshortcuts': 'ArrowLeft ArrowRight ArrowUp ArrowDown',
+      'aria-valuemin': String(X.scale.min), 'aria-valuemax': String(X.scale.max), 'aria-valuenow': String(vx),
       'aria-valuetext': `${axisName(xKey())} ${C.fmtNum(vx, LANG, false)}, ${axisName(yKey())} ${C.fmtNum(vy, LANG, false)}, ${it.code} ${it.title}`,
       title: `${it.code}: ${it.title}\n${axisName(xKey())}: ${C.fmtNum(vx, LANG, false)}${bx ? ' (' + bx.label + ')' : ''}\n${axisName(yKey())}: ${C.fmtNum(vy, LANG, false)}${by ? ' (' + by.label + ')' : ''}` },
       h('span', { class: 'vet-marker-code', text: (it.polarity === 'anti' ? '−' : '') + it.code }));
@@ -514,7 +719,7 @@ function plane(items) {
       const up = () => {
         m.removeEventListener('pointermove', move); m.removeEventListener('pointerup', up);
         if (team) team.busy = false;
-        if (moved) change(() => { C.setEstimate(board, it.id, xKey(), nx, 'drag'); C.setEstimate(board, it.id, yKey(), ny, 'drag'); });
+        if (moved) change(() => { setEst(it.id, xKey(), nx, 'drag'); setEst(it.id, yKey(), ny, 'drag'); });
       };
       m.addEventListener('pointermove', move); m.addEventListener('pointerup', up);
     });
@@ -538,38 +743,108 @@ function plane(items) {
 
 function select(id) { selected = selected === id ? null : id; render(); }
 
+/** The item inspector (UX refactoring 2026-10-21): title, both values, priority and polarity on top; the rest in
+    collapsible sections whose open state is kept in this browser. Overrides, discrepancies and errors stay visible. */
+const cardOpen = (() => { try { return JSON.parse(localStorage.getItem('vet.card.open') || '{}'); } catch (e) { return {}; } })();
+function cardSection(key, title, kids, { open = false, count = '' } = {}) {
+  kids = kids.filter(Boolean);
+  if (!kids.length) return null;
+  const d = h('details', { class: 'vet-card-sec', open: (cardOpen[key] ?? open) ? true : null,
+    ontoggle: (e) => { cardOpen[key] = e.target.open; try { localStorage.setItem('vet.card.open', JSON.stringify(cardOpen)); } catch (x) { /* private mode */ } } },
+  h('summary', {}, h('span', { text: title }), count ? h('small', { text: count }) : null), ...kids);
+  return d;
+}
+
 function renderCard() {
   ui.card.replaceChildren();
   const it = board.items.find((x) => x.id === selected);
   ui.card.hidden = !it;
   if (!it) return;
+  const ro = team && !team.canEdit;
   const f = (label, input) => h('label', { class: 'vet-field' }, h('span', { text: label }), input);
   const upd = (fn) => change(fn, { noScale: false });
-  const title = h('input', { value: it.title, maxlength: '200', onchange: (e) => { const v = e.target.value.trim(); if (v) upd(() => { it.title = v; }); else e.target.value = it.title; } });
-  const code = h('input', { value: it.code, maxlength: '24', onchange: (e) => {
+  const title = h('input', { class: 'vet-card-title', value: it.title, maxlength: '200', 'aria-label': t('field.title'), readonly: ro || null, onchange: (e) => { const v = e.target.value.trim(); if (v) upd(() => { it.title = v; }); else e.target.value = it.title; } });
+  const code = h('input', { value: it.code, maxlength: '24', readonly: ro || null, onchange: (e) => {
     const v = e.target.value.trim();
     if (!v || board.items.some((x) => x !== it && String(x.code).toLowerCase() === v.toLowerCase())) { toast(v ? t('err.dupCode', { code: v, type: typeName(it.typeId) }) : t('err.required')); e.target.value = it.code; return; }
     upd(() => { it.code = v; });
   } });
-  const desc = h('textarea', { rows: '3', maxlength: '5000', onchange: (e) => upd(() => { it.description = e.target.value; }) }); desc.value = it.description || '';
-  const type = h('select', { onchange: (e) => upd(() => { it.typeId = e.target.value; }) }, board.itemTypes.map((ty) => h('option', { value: ty.id, selected: ty.id === it.typeId || null, text: typeName(ty.id) })));
-  const pol = h('select', { onchange: (e) => upd(() => { it.polarity = e.target.value; ensureAnti(it); }) },
+  const desc = h('textarea', { rows: '3', maxlength: '5000', readonly: ro || null, onchange: (e) => upd(() => { it.description = e.target.value; }) }); desc.value = it.description || '';
+  const type = h('select', { disabled: ro || null, onchange: (e) => upd(() => { it.typeId = e.target.value; }) }, board.itemTypes.map((ty) => h('option', { value: ty.id, selected: ty.id === it.typeId || null, text: typeName(ty.id) })));
+  const pol = h('select', { disabled: ro || null, onchange: (e) => upd(() => { it.polarity = e.target.value; ensureAnti(it); }) },
     h('option', { value: 'value', selected: it.polarity === 'value' || null, text: t('polarity.value') }), h('option', { value: 'anti', selected: it.polarity === 'anti' || null, text: t('polarity.anti') }));
-  const numIn = (key) => { const v = myPos(it.id, key); return h('input', { type: 'number', step: 'any', value: v === null ? '' : String(v), placeholder: t('notEstimated'),
-    onchange: (e) => upd(() => C.setEstimate(board, it.id, key, e.target.value === '' ? null : Number(e.target.value), 'input')) }); };
-  const tags = h('input', { value: (it.tags || []).join(', '), placeholder: t('card.tagsHint'), onchange: (e) => upd(() => { it.tags = e.target.value.split(',').map((x) => x.trim()).filter(Boolean); }) });
-  const links = h('input', { value: (it.links || []).join(' '), placeholder: 'https://…', onchange: (e) => upd(() => { it.links = e.target.value.split(/\s+/).filter((x) => /^https?:\/\//.test(x)); }) });
-  const ext = h('input', { value: it.externalId || '', maxlength: '120', onchange: (e) => upd(() => { it.externalId = e.target.value.trim(); }) });
+  const canEst = !team || team.canEstimate;
+  const numIn = (key) => { const v = myPos(it.id, key); return h('input', { type: 'number', step: 'any', class: 'vet-card-num', value: v === null ? '' : String(v), placeholder: t('notEstimated'), readonly: canEst ? null : true,
+    onchange: (e) => upd(() => setEst(it.id, key, e.target.value === '' ? null : Number(e.target.value), 'input')) }); };
+  const tags = h('input', { value: (it.tags || []).join(', '), placeholder: t('card.tagsHint'), readonly: ro || null, onchange: (e) => upd(() => { it.tags = e.target.value.split(',').map((x) => x.trim()).filter(Boolean); }) });
+  const links = h('input', { value: (it.links || []).join(' '), placeholder: 'https://…', readonly: ro || null, onchange: (e) => upd(() => { it.links = e.target.value.split(/\s+/).filter((x) => /^https?:\/\//.test(x)); }) });
+  const ext = h('input', { value: it.externalId || '', maxlength: '120', readonly: ro || null, onchange: (e) => upd(() => { it.externalId = e.target.value.trim(); }) });
   const p = C.priorityOf(board, it);
-  ui.card.append(h('div', { class: 'vet-card-head' }, h('strong', { text: it.code }), h('span', { class: 'vet-grow' }), btn('', () => { selected = null; render(); }, { icon: 'x', title: t('close') })),
-    f(t('field.title') + ' *', title), f(t('field.code'), code), f(t('field.description'), desc),
-    h('div', { class: 'vet-field-row' }, f(t('field.type'), type), f(t('field.polarity'), pol)),
-    h('div', { class: 'vet-field-row' }, f(axisName('out'), numIn('out')), board.priority === 'out' ? null : f(axisName('in'), numIn('in'))),
-    h('p', { class: 'vet-card-priority' }, t('col.priority') + ': ', h('strong', { text: fmtPriority(p) }), p.note === 'neg-in' ? h('span', { class: 'vet-warn', text: ' ' + t('warn.negIn') }) : null),
-    teamCard(it),
-    f(t('field.tags'), tags), f(t('field.links'), links), f(t('field.external'), ext),
-    team && !team.canEdit ? null : h('div', { class: 'vet-row' }, btn(t('delete'), () => deleteItems([it.id]), { icon: 'trash', cls: 'vet-btn-danger' })));
+  const ty = C.typeById(board, it.typeId);
+  // what must never hide: a manual override of a formula, a team discrepancy, blind mode
+  const alerts = [
+    ...['out', 'in'].filter((k) => it.manual && it.manual[k] && HP.formulaOf(board, k)).map((k) => h('p', { class: 'vet-small vet-card-alert' }, '✋ ' + axisName(k) + ': ' + t('hp.manual') + ' ',
+      ro ? null : h('button', { type: 'button', class: 'vet-link', text: t('hp.back'), onclick: () => upd(() => applyFormula(it, true)) }))),
+    team && team.othersVisible && C.needsDiscussion(board, it.id) ? h('p', { class: 'vet-warn vet-card-alert', text: t('team.discussHint') }) : null,
+    team && team.mode === 'blind' && !team.revealed ? h('p', { class: 'vet-small vet-card-alert', text: t('team.mode.blind') + ' · ' + t('team.hidden') }) : null,
+    it.isReference ? h('p', { class: 'vet-small vet-card-alert', text: '◆ ' + t('ref.one') + (it.refNote ? ' · ' + it.refNote : '') }) : null,
+  ];
+  const metrics = metricsBlock(it, upd, ro), goals = goalsBlock(it, upd, ro), refs = refBlock(it, upd, ro);
+  ui.card.append(...[
+    h('div', { class: 'vet-card-head', style: { '--t': ty.color } }, h('span', { class: 'vet-card-code', text: (it.polarity === 'anti' ? '−' : '') + it.code }), h('span', { class: 'vet-grow' }),
+      btn('', () => { selected = null; render(); }, { icon: 'x', title: t('close') })),
+    title,
+    h('div', { class: 'vet-field-row vet-card-values' }, f(axisName('out'), numIn('out')), board.priority === 'out' ? null : f(axisName('in'), numIn('in'))),
+    h('div', { class: 'vet-card-prio' }, h('span', { text: t('col.priority') }), h('strong', { text: fmtPriority(p) }), h('span', { class: 'vet-grow' }), h('label', { class: 'vet-inline-field' }, h('span', { text: t('field.polarity') }), pol)),
+    p.note === 'neg-in' ? h('p', { class: 'vet-warn', text: t('warn.negIn') }) : null,
+    ...alerts,
+    cardSection('team', t('team.estimates'), [teamCard(it)], { open: true }),
+    cardSection('metrics', t('hp.metrics'), metrics, { open: true }),
+    cardSection('goals', t('goals.title'), goals, { count: (it.goalIds || []).length ? String((it.goalIds || []).length) : '' }),
+    cardSection('details', t('card.details'), [h('div', { class: 'vet-field-row' }, f(t('field.code'), code), f(t('field.type'), type)), f(t('field.description'), desc), ...refs]),
+    cardSection('links', t('card.linksTags'), [f(t('field.tags'), tags), f(t('field.links'), links), f(t('field.external'), ext)]),
+    ro ? null : h('div', { class: 'vet-row vet-card-foot' }, btn(t('delete'), () => deleteItems([it.id]), { icon: 'trash', cls: 'vet-btn-danger vet-btn-sm' }))].filter(Boolean));
 }
+
+/** HP-6, HP-9: metric values and what the formula makes of them. */
+function metricsBlock(it, upd, ro) {
+  if (!(board.metrics || []).length) return [];
+  const rows = board.metrics.map((m) => h('label', { class: 'vet-field' }, h('span', { text: metricName(m) + (m.unit ? ', ' + m.unit : '') }),
+    h('input', { type: 'number', step: 'any', value: it.metrics && Number.isFinite(it.metrics[m.key]) ? String(it.metrics[m.key]) : '', readonly: ro || null,
+      onchange: (e) => upd(() => { it.metrics = { ...(it.metrics || {}) }; if (e.target.value === '') delete it.metrics[m.key]; else it.metrics[m.key] = Number(e.target.value); applyFormula(it); }) })));
+  const lines = ['out', 'in'].filter((k) => k === 'out' || board.priority !== 'out').map((key) => {
+    const fv = HP.formulaValue(board, it, key);
+    if (!fv) return null;
+    if (fv.error) return h('p', { class: 'vet-warn', text: axisName(key) + ': ' + t('hp.formulaError') });
+    if (fv.value === null) return h('p', { class: 'vet-small', text: axisName(key) + ': ' + t('hp.missing', { names: fv.missing.map((k) => metricName(board.metrics.find((m) => m.key === k) || { key: k })).join(', ') }) });
+    return h('p', { class: 'vet-small' }, h('b', { text: axisName(key) + ': ' }), t('hp.byFormula', { v: C.fmtNum(fv.value, LANG, false) }));
+  });
+  return [h('div', { class: 'vet-field-row is-wrap' }, rows), ...lines.filter(Boolean)];
+}
+
+/** HP-12, HP-13: the item's goals and why it matters. */
+function goalsBlock(it, upd, ro) {
+  const goals = HP.goalTree(board);
+  if (!goals.length) return [];
+  const have = new Set(it.goalIds || []);
+  const checks = goals.map(({ goal, depth }) => h('label', { class: 'vet-check', style: { paddingInlineStart: depth * 14 + 'px' } },
+    h('input', { type: 'checkbox', checked: have.has(goal.id) || null, disabled: ro || null, onchange: (e) => upd(() => { const set = new Set(it.goalIds || []); if (e.target.checked) set.add(goal.id); else set.delete(goal.id); it.goalIds = [...set]; applyFormula(it); }) }),
+    h('span', { text: goal.title })));
+  const why = (it.goalIds || []).filter((g) => HP.goalById(board, g)).map((g) => h('li', { text: [it.code, ...HP.goalChain(board, g).map((x) => x.title)].join(' → ') }));
+  return [...checks, why.length ? h('div', { class: 'vet-why' }, h('strong', { text: t('goals.why') }), h('ul', {}, why)) : h('p', { class: 'vet-small vet-muted', text: t('goals.noGoal') })];
+}
+
+/** HP-1: the reference switch and its note. */
+function refBlock(it, upd, ro) {
+  if (ro) return [];
+  const estimated = C.valueOf(board, it.id, 'out') !== null;
+  return [h('label', { class: 'vet-check', title: estimated ? '' : t('ref.needValue') },
+    h('input', { type: 'checkbox', checked: it.isReference || null, disabled: !estimated && !it.isReference ? true : null,
+      onchange: (e) => upd(() => { it.isReference = e.target.checked; if (!it.isReference) delete it.refNote; }) }), h('span', { text: t('ref.make') })),
+  it.isReference ? h('label', { class: 'vet-field' }, h('span', { text: t('ref.note') }), h('input', { value: it.refNote || '', maxlength: '200', onchange: (e) => upd(() => { it.refNote = e.target.value.trim(); }) })) : null].filter(Boolean);
+}
+
+const metricName = (m) => (m.name && (m.name[LOC] || m.name.en || Object.values(m.name)[0])) || m.key;
 
 function fmtPriority(p) { return p.value === null ? t('notEstimated') : p.value === Infinity ? '∞' : p.value === -Infinity ? '-∞' : C.fmtNum(Math.round(p.value * 10) / 10, LANG, false); }
 
@@ -594,8 +869,8 @@ function renderList() {
     h('input', { type: 'search', class: 'vet-search', placeholder: t('search'), value: filter.q, 'aria-label': t('search'),
       oninput: (e) => { filter.q = e.target.value; renderScales(); renderListBody(); } }),
     h('span', { class: 'vet-grow' }),
-    team && !team.canEdit ? null : btn(t('add', { type: typeName(lastTypeId || board.itemTypes[0].id).toLowerCase() }), () => openAdd(), { icon: 'plus', cls: 'vet-btn-primary' }),
-    team && !team.canEdit ? null : btn(t('paste.open'), () => openPaste(), { icon: 'paste' }));
+    (() => { const left = board.items.filter((x) => !x.isReference && C.neededAxes(board).some((k) => myPos(x.id, k) === null)).length; // connect the list to estimating
+      return left && (!team || team.canEstimate) ? btn(t('list.remaining', { n: left }), () => openFlow(), { icon: 'play', cls: 'vet-btn-sm' }) : null; })());
   const types = h('div', { class: 'vet-filters' }, board.itemTypes.length > 1 ? board.itemTypes.map((ty) => {
     const on = !filter.types || filter.types.has(ty.id);
     return h('button', { type: 'button', class: 'vet-tag', 'aria-pressed': String(on), style: { '--t': ty.color }, text: typeName(ty.id, true), onclick: () => {
@@ -604,11 +879,17 @@ function renderList() {
     } });
   }) : null, team && team.othersVisible && board.items.some((x) => C.needsDiscussion(board, x.id)) ? h('button', { type: 'button', class: 'vet-tag' + (filter.discuss ? ' is-active' : ''), 'aria-pressed': String(!!filter.discuss), text: t('team.discussFilter'), onclick: () => { filter.discuss = !filter.discuss; render(); } }) : null,
   filter.bucket ? h('button', { type: 'button', class: 'vet-tag is-active', text: `${axisName(filter.bucket.axis)}: ${board.axes[filter.bucket.axis].buckets.find((b) => b.id === filter.bucket.id)?.label || ''} ✕`, onclick: () => { filter.bucket = null; render(); } }) : null);
-  ui.list.append(head, types);
+  types.append(...[
+    refItems().length ? h('button', { type: 'button', class: 'vet-tag' + (filter.refs ? ' is-active' : ''), 'aria-pressed': String(!!filter.refs), text: t('ref.list', { n: refItems().length }), onclick: () => { filter.refs = !filter.refs; render(); } }) : null,
+    refItems().length ? h('label', { class: 'vet-check vet-inline' }, h('input', { type: 'checkbox', checked: showRefs() || null, onchange: (e) => change(() => { board.settings.showRefs = e.target.checked; }, { noScale: true }) }), h('span', { text: t('ref.show') })) : null,
+    filter.goal ? h('button', { type: 'button', class: 'vet-tag is-active', text: (filter.goal === 'none' ? t('goals.none') : t('goals.title') + ': ' + (HP.goalById(board, filter.goal)?.title || '')) + ' ✕', onclick: () => { filter.goal = null; render(); } }) : null,
+  ].filter(Boolean));
+  ui.list.append(head, types, goalsPanel());
+  if (filter.refs) { ui.list.append(refList()); return; }
   ui.tbody = h('tbody');
   const tbl = h('table', { class: 'vet-table' }, h('thead', {}, h('tr', {},
     h('th', { scope: 'col', class: 'vet-c-pick' }, h('input', { type: 'checkbox', 'aria-label': t('pickAll'), checked: rows.length && rows.every((r) => picked.has(r.id)) || null,
-      onchange: (e) => { rows.forEach((r) => (e.target.checked ? picked.add(r.id) : picked.delete(r.id))); renderList(); } })),
+      onchange: (e) => { C.sortedItems(board, visibleItems()).forEach((r) => (e.target.checked ? picked.add(r.id) : picked.delete(r.id))); renderList(); } })), // the rows shown now (search included)
     h('th', { scope: 'col', text: t('col.code') }), h('th', { scope: 'col', text: t('col.title') }), h('th', { scope: 'col', class: 'vet-c-num', text: axisName('out') }),
     board.priority === 'out' ? null : h('th', { scope: 'col', class: 'vet-c-num', text: axisName('in') }),
     h('th', { scope: 'col', class: 'vet-c-num', text: t('col.priority') }), h('th', { scope: 'col', class: 'vet-c-act' }, h('span', { class: 'vet-sr', text: t('col.actions') })))), ui.tbody);
@@ -620,19 +901,32 @@ function renderList() {
     btn(t('bulk.reset'), () => change(() => { board.estimates = board.estimates.filter((e) => !picked.has(e.itemId)); })),
     btn(t('bulk.export'), () => download(C.toCSV(board, board.items.filter((x) => picked.has(x.id)), (id) => typeName(id)), C.fileName(board, 'csv'), 'text/csv')),
     btn(t('delete'), () => deleteItems([...picked]), { cls: 'vet-btn-danger' }), btn(t('bulk.clear'), () => { picked.clear(); renderList(); })));
-  ui.list.append(h('div', { class: 'vet-list-foot' },
-    btn(t('csv.quick'), () => download(C.toCSV(board, C.sortedItems(board), (id) => typeName(id)), C.fileName(board, 'csv'), 'text/csv'), { icon: 'download' }),
-    h('span', { class: 'vet-grow' }),
-    board.items.length ? btn(t('clear'), () => confirmBox(t('clear.ask'), t('clear'), () => change(() => {
-      board.items = []; board.estimates = []; picked.clear(); selected = null;
-      for (const key of ['out', 'in']) if (!board.axes[key].autoscale.manual) { const ax = board.axes[key]; const old = { ...ax.scale }; ax.scale.max = Math.max(ax.autoscale.minLength, 10 * ax.scale.step); if (ax.scale.min < 0) ax.scale.min = -ax.scale.max / 2; C.rebuildBuckets(ax, old); }
-    })), { cls: 'vet-btn-ghost' }) : null));
+  if (TV) ui.list.append(h('div', { class: 'vet-list-foot' }, h('button', { type: 'button', class: 'vet-link vet-small', text: t('tv.what'), onclick: aboutData })));
 }
 
+const LIST_CHUNK = 200; // NF-1: the table grows by chunks while scrolling, so 5000 rows never render at once
+let listObserver = null;
 function renderListBody(rows) {
   rows = rows || C.sortedItems(board, visibleItems());
   ui.tbody.replaceChildren();
+  if (listObserver) { listObserver.disconnect(); listObserver = null; }
   if (!rows.length) { ui.tbody.append(h('tr', {}, h('td', { colspan: '7', class: 'vet-empty', text: board.items.length ? t('list.noMatch') : t('list.empty') }))); return; }
+  let shown = 0;
+  const more = () => {
+    const next = rows.slice(shown, shown + LIST_CHUNK);
+    shown += next.length;
+    ui.tbody.querySelector('.vet-more-row')?.remove();
+    listRows(next);
+    if (shown < rows.length) {
+      const tr = h('tr', { class: 'vet-more-row' }, h('td', { colspan: '7' }, btn(t('list.more', { n: rows.length - shown }), more, { cls: 'vet-btn-sm' })));
+      ui.tbody.append(tr);
+      if ('IntersectionObserver' in window) { listObserver = listObserver || new IntersectionObserver((es) => { if (es.some((x) => x.isIntersecting)) more(); }, { rootMargin: '600px' }); listObserver.observe(tr); }
+    }
+  };
+  more();
+}
+
+function listRows(rows) {
   for (const it of rows) {
     const ty = C.typeById(board, it.typeId);
     const o = C.valueOf(board, it.id, 'out'), i = C.valueOf(board, it.id, 'in');
@@ -651,6 +945,114 @@ function renderListBody(rows) {
       h('td', { class: 'vet-c-act' }, btn('', () => select(it.id), { icon: 'edit', title: t('edit'), cls: 'vet-btn-icon' }), team && !team.canEdit ? null : btn('', () => deleteItems([it.id]), { icon: 'trash', title: t('delete'), cls: 'vet-btn-icon' })));
     ui.tbody.append(tr);
   }
+}
+
+/** HP-3: the references on their own list, with their values; unmark or import more (HP-1). */
+function refList() {
+  const ro = team && !team.canEdit;
+  const rows = refItems().map((it) => h('tr', {}, h('td', {}, h('button', { type: 'button', class: 'vet-link', text: '◆ ' + it.code, onclick: () => select(it.id) })),
+    h('td', {}, h('span', { text: it.title }), it.refNote ? h('small', { text: it.refNote }) : null),
+    h('td', { class: 'vet-c-num', text: C.fmtNum(C.valueOf(board, it.id, 'out'), LANG, false) }),
+    board.priority === 'out' ? null : h('td', { class: 'vet-c-num', text: C.valueOf(board, it.id, 'in') === null ? '—' : C.fmtNum(C.valueOf(board, it.id, 'in'), LANG, false) }),
+    h('td', { class: 'vet-c-act' }, ro ? null : btn(t('ref.unmark'), () => change(() => { it.isReference = false; delete it.refNote; }), { cls: 'vet-btn-sm' }))));
+  return h('div', { class: 'vet-table-wrap' }, h('p', { class: 'vet-hint', text: t('ref.hint') }),
+    h('table', { class: 'vet-table' }, h('thead', {}, h('tr', {}, [t('col.code'), t('col.title'), axisName('out'), board.priority === 'out' ? null : axisName('in'), ''].filter((x) => x !== null).map((x) => h('th', { text: x })))), h('tbody', {}, rows)),
+    ro ? null : h('div', { class: 'vet-row' }, btn(t('ref.import'), importRefs, { icon: 'upload', cls: 'vet-btn-sm' })));
+}
+
+/** HP-1: estimated items of another board (.vet.json) come in as references (new ids, values kept). */
+function importRefs() {
+  const inp = h('input', { type: 'file', accept: '.json,application/json' });
+  inp.addEventListener('change', async () => {
+    const file = inp.files[0]; if (!file) return;
+    let src;
+    try { src = C.importBoard(JSON.parse(await file.text())); } catch (e) { toast(t('imp.invalid')); return; }
+    const list = src.items.filter((x) => C.valueOf(src, x.id, 'out') !== null);
+    if (!list.length) { toast(t('ref.noneIn')); return; }
+    const taken = new Set();
+    change(() => list.forEach((x) => {
+      const it = C.makeItem(board, { title: x.title, code: x.code, description: x.description, typeId: board.itemTypes.some((ty) => ty.id === x.typeId) ? x.typeId : board.itemTypes[0].id, polarity: x.polarity, taken });
+      taken.add(it.code); it.isReference = true; it.refNote = (src.title || file.name).slice(0, 200); board.items.push(it);
+      for (const key of ['out', 'in']) { const v = C.valueOf(src, x.id, key); if (v !== null && Number.isFinite(v)) C.setEstimate(board, it.id, key, v, 'import'); }
+    }));
+    toast(t('ref.imported', { n: list.length }), () => undo());
+  });
+  inp.click();
+}
+
+/** HP-14 ... HP-17: the goals tree with counts and sums; a click filters the list and the scales. */
+function goalsPanel() {
+  const ro = team && !team.canEdit;
+  const tree = HP.goalTree(board);
+  if (!tree.length && ro) return null;
+  const { stats, none } = HP.goalStats(board, board.items.filter((x) => !x.isReference), C.valueOf);
+  const row = (id, label, depth, st, extra) => h('div', { class: 'vet-goal' + (filter.goal === id ? ' is-active' : ''), style: { paddingInlineStart: 8 + depth * 18 + 'px' } },
+    h('button', { type: 'button', class: 'vet-link', text: label, 'aria-pressed': String(filter.goal === id), onclick: () => { filter.goal = filter.goal === id ? null : id; render(); } }),
+    h('span', { class: 'vet-grow' }), h('small', { text: t('goals.stats', { n: st.count, sum: C.fmtNum(st.sumOut, LANG) }) }), extra);
+  const body = h('div', { class: 'vet-goals-body' },
+    tree.map(({ goal, depth }) => row(goal.id, (goal.weight ? '★'.repeat(goal.weight) + ' ' : '') + goal.title, depth, stats.get(goal.id) || { count: 0, sumOut: 0 },
+      ro ? null : h('span', { class: 'vet-row' }, btn('', () => openGoal(null, goal.id), { icon: 'plus', title: t('goals.addChild'), cls: 'vet-btn-icon' }),
+        btn('', () => openGoal(goal), { icon: 'edit', title: t('edit'), cls: 'vet-btn-icon' }), btn('', () => deleteGoal(goal), { icon: 'trash', title: t('delete'), cls: 'vet-btn-icon' })))),
+    tree.length ? row('none', t('goals.none'), 0, none, null) : h('p', { class: 'vet-hint', text: t('goals.empty') }),
+    ro ? null : h('div', { class: 'vet-row' }, btn(t('goals.add'), () => openGoal(null, null), { icon: 'plus', cls: 'vet-btn-sm' }),
+      tree.length ? btn(t('goals.export'), () => download(JSON.stringify(HP.goalsDoc(board), null, 2), C.fileName(board, 'vet-goals.json'), 'application/json'), { icon: 'download', cls: 'vet-btn-sm' }) : null,
+      btn(t('goals.import'), importGoals, { icon: 'upload', cls: 'vet-btn-sm' })));
+  return h('details', { class: 'vet-goals', open: goalsOpen || filter.goal ? true : null, ontoggle: (e) => { goalsOpen = e.target.open; } },
+    h('summary', { text: t('goals.title') + ` (${tree.length})` }), body);
+}
+
+function openGoal(goal, parentId) {
+  const g = goal ? { ...goal } : { id: 'g-' + C.uuidv7().slice(-10), title: '', desiredState: '', measure: '', parentId: parentId || null, weight: 3 };
+  const f = (label, input) => h('label', { class: 'vet-field' }, h('span', { text: label }), input);
+  const title = h('input', { value: g.title, maxlength: '200' });
+  const state = h('textarea', { rows: '2', maxlength: '1000' }); state.value = g.desiredState || '';
+  const measure = h('input', { value: g.measure || '', maxlength: '500' });
+  const parent = h('select', {}, h('option', { value: '', text: t('goals.root') }),
+    HP.goalTree(board).filter(({ goal: x }) => x.id !== g.id && !HP.goalCycle(board, g.id, x.id)).map(({ goal: x, depth }) => h('option', { value: x.id, selected: x.id === g.parentId || null, text: '  '.repeat(depth) + x.title })));
+  const weight = h('select', {}, [1, 2, 3, 4, 5].map((n) => h('option', { value: String(n), selected: n === (g.weight || 3) || null, text: '★'.repeat(n) })));
+  const err = h('p', { class: 'vet-error', role: 'alert' });
+  const d = dialog(goal ? t('goals.edit') : t('goals.add'), h('div', { class: 'vet-form' }, f(t('goals.name') + ' *', title), f(t('goals.state'), state), f(t('goals.measure'), measure),
+    h('div', { class: 'vet-field-row' }, f(t('goals.parent'), parent), f(t('goals.weight'), weight)), h('p', { class: 'vet-hint', text: t('goals.weightHint') }), err),
+  [btn(t('cancel'), () => d.closeNow()), btn(t('apply'), () => {
+    const tl = title.value.trim();
+    if (!tl) { err.textContent = t('err.required'); title.focus(); return; }
+    Object.assign(g, { title: tl, desiredState: state.value.trim(), measure: measure.value.trim(), parentId: parent.value || null, weight: Number(weight.value) });
+    change(() => {
+      board.goals = board.goals || [];
+      const i = board.goals.findIndex((x) => x.id === g.id);
+      if (i >= 0) board.goals[i] = g; else board.goals.push(g);
+      board.items.forEach((it) => { if ((it.goalIds || []).includes(g.id)) applyFormula(it); });
+    }, { noScale: true });
+    d.closeNow();
+  }, { cls: 'vet-btn-primary' })]);
+  title.focus();
+}
+
+function deleteGoal(goal) {
+  confirmBox(t('goals.deleteAsk', { name: goal.title }), t('delete'), () => change(() => {
+    board.goals.forEach((x) => { if (x.parentId === goal.id) x.parentId = goal.parentId || null; }); // children move up
+    board.goals = board.goals.filter((x) => x.id !== goal.id);
+    board.items.forEach((it) => { if (it.goalIds) it.goalIds = it.goalIds.filter((id) => id !== goal.id); });
+    if (filter.goal === goal.id) filter.goal = null;
+  }, { noScale: true }));
+}
+
+function importGoals() {
+  const inp = h('input', { type: 'file', accept: '.json,application/json' });
+  inp.addEventListener('change', async () => {
+    const file = inp.files[0]; if (!file) return;
+    let goals = null;
+    try { goals = HP.readGoals(JSON.parse(await file.text())); } catch (e) { goals = null; }
+    if (!goals) { toast(t('goals.badFile')); return; }
+    change(() => { const have = new Map((board.goals || []).map((g) => [g.id, g])); goals.forEach((g) => have.set(g.id, g)); board.goals = [...have.values()]; }, { noScale: true });
+    toast(t('goals.imported', { n: goals.length }), () => undo());
+  });
+  inp.click();
+}
+
+/** TV-4: "What data we collect", in plain words. */
+function aboutData() {
+  const d = dialog(t('tv.what'), h('div', { class: 'vet-form' }, ['tv.data.1', 'tv.data.2', 'tv.data.3', 'tv.data.4', 'tv.data.5'].map((k) => h('p', { text: t(k) }))), [btn(t('close'), () => d.closeNow(), { cls: 'vet-btn-primary' })]);
 }
 
 /** Delete without a dialog, with Undo in a toast for 10 s (EL-4). */
@@ -676,7 +1078,7 @@ function confirmBox(text, yes, onYes) {
   const d = dialog(t('confirm'), h('p', { text }), [btn(t('cancel'), () => d.closeNow()), btn(yes, () => { d.closeNow(); onYes(); }, { cls: 'vet-btn-primary' })]);
 }
 
-function openAdd() {
+function openAdd({ asRef = false } = {}) {
   const pending = [];
   const typeId0 = lastTypeId && board.itemTypes.some((x) => x.id === lastTypeId) ? lastTypeId : board.itemTypes[0].id;
   const err = h('p', { class: 'vet-error', role: 'alert' });
@@ -709,13 +1111,14 @@ function openAdd() {
     if (title.value.trim() || code.value.trim()) { const p = take(); if (!p) return; pending.push(p); }
     else if (!pending.length) { title.classList.add('is-error'); err.textContent = t('err.required'); return; }
     lastTypeId = type.value;
-    change(() => pending.forEach((p) => { board.items.push(p.item); if (p.out !== null) C.setEstimate(board, p.item.id, 'out', p.out, 'input'); if (p.in !== null) C.setEstimate(board, p.item.id, 'in', p.in, 'input'); }));
+    change(() => pending.forEach((p) => { if (asRef && p.out !== null) p.item.isReference = true; board.items.push(p.item); if (p.out !== null) setEst(p.item.id, 'out', p.out, 'input'); if (p.in !== null) setEst(p.item.id, 'in', p.in, 'input'); }));
     pending.filter((p) => p.item.polarity === 'anti').slice(0, 1).forEach((p) => ensureAnti(p.item));
     pending.length = 0; d.closeNow();
   };
   title.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); commit(); } else if (e.key === 'Enter') { e.preventDefault(); more(); } });
   const body = h('div', { class: 'vet-form' }, chips, f(t('field.title') + ' *', title), h('div', { class: 'vet-field-row' }, f(t('field.code'), code), f(t('field.type'), type), f(t('field.polarity'), pol)),
-    f(t('field.description'), desc), h('div', { class: 'vet-field-row' }, f(axisName('out'), vo), board.priority === 'out' ? null : f(axisName('in'), vi)), h('p', { class: 'vet-hint', text: t('add.keys') }), err);
+    f(t('field.description'), desc), h('div', { class: 'vet-field-row' }, f(axisName('out'), vo), board.priority === 'out' ? null : f(axisName('in'), vi)),
+    asRef ? h('p', { class: 'vet-hint', text: t('ref.addHint') }) : null, h('p', { class: 'vet-hint', text: t('add.keys') }), err);
   const d = dialog(t('add', { type: typeName(typeId0).toLowerCase() }), body, [btn(t('add.more'), more, { icon: 'plus' }), btn(t('add.close'), commit, { cls: 'vet-btn-primary' })],
     { onClose: () => { if (!pending.length) return true; confirmBox(t('add.lose'), t('confirm'), () => d.closeNow()); return false; } });
   title.focus();
@@ -744,7 +1147,7 @@ function openPaste() {
     const taken = new Set();
     change(() => good.forEach((r) => {
       const it = C.makeItem(board, { title: r.title, code: r.code, typeId: type.value, taken }); taken.add(it.code); board.items.push(it);
-      if (r.out !== null) C.setEstimate(board, it.id, 'out', r.out, 'import'); if (r.in !== null) C.setEstimate(board, it.id, 'in', r.in, 'import');
+      if (r.out !== null) setEst(it.id, 'out', r.out, 'import'); if (r.in !== null) setEst(it.id, 'in', r.in, 'import');
     }));
     d.closeNow(); toast(t('paste.done', { n: good.length }), () => undo());
   }, { cls: 'vet-btn-primary', disabled: true });
@@ -756,6 +1159,7 @@ function openPaste() {
 // ---------- sequence mode (UI-2) ----------
 
 function openFlow(axisKey, startId) {
+  if (TV) TV.note('flow');
   let key = axisKey && axisKey !== '2d' ? axisKey : 'out';
   let current = null;
   const box = h('div', { class: 'vet-flow' });
@@ -764,7 +1168,7 @@ function openFlow(axisKey, startId) {
     current = (startId && queue.find((x) => x.id === startId)) || queue[0] || null; startId = null;
     draw(queue.length);
   };
-  const setVal = (v) => { if (!current) return; const it = current; change(() => C.setEstimate(board, it.id, key, clampFor(it, key, v), 'input')); next(); };
+  const setVal = (v) => { if (!current) return; const it = current; change(() => setEst(it.id, key, clampFor(it, key, v), 'input')); next(); };
   const draw = (left) => {
     box.replaceChildren();
     const tabs = h('div', { class: 'vet-seg' }, ['out', 'in'].filter((k) => k === 'out' || board.priority !== 'out').map((k) => btn(axisName(k), () => { key = k; next(); }, { pressed: k === key })));
@@ -772,8 +1176,8 @@ function openFlow(axisKey, startId) {
     const axis = board.axes[key];
     const s = axis.scale;
     const strip = h('div', { class: 'vet-flow-scale' });
-    axis.buckets.forEach((b, i) => strip.append(h('button', { type: 'button', class: 'vet-flow-bucket' + (b.polarity === 'anti' ? ' is-anti' : ''), style: { '--c': b.color, flexGrow: String(b.to - b.from + s.step) },
-      onclick: (e) => { if (board.settings.bucketsOnly) { setVal(C.bucketMiddle(axis, b)); return; } const r = e.currentTarget.getBoundingClientRect(); setVal(b.from + ((e.clientX - r.left) / r.width) * (b.to - b.from + s.step) - s.step / 2); } },
+    axis.buckets.forEach((b, i) => strip.append(h('button', { type: 'button', class: 'vet-flow-bucket ink-' + inkOn(b.color) + (b.polarity === 'anti' ? ' is-anti' : ''), style: { '--c': b.color, flexGrow: String(b.to - b.from + s.step) },
+      onclick: (e) => { if (board.settings.bucketsOnly || e.detail === 0) { setVal(C.bucketMiddle(axis, b)); return; } /* e.detail 0 = Enter or Space: no pointer position */ const r = e.currentTarget.getBoundingClientRect(); setVal(b.from + ((e.clientX - r.left) / r.width) * (b.to - b.from + s.step) - s.step / 2); } },
     h('b', { text: String(i + 1) }), h('span', { text: b.label }), h('small', { text: board.settings.bucketsOnly ? '' : `${C.fmtNum(b.from, LANG)}…${C.fmtNum(b.to, LANG)}` }))));
     box.append(tabs, h('p', { class: 'vet-hint', text: t('flow.left', { n: left }) }),
       h('div', { class: 'vet-flow-item' }, h('span', { class: 'vet-flow-code', text: (current.polarity === 'anti' ? '−' : '') + current.code }), h('strong', { text: current.title }), current.description ? h('p', { text: current.description }) : null),
@@ -796,8 +1200,9 @@ function openFlow(axisKey, startId) {
 
 function openSettings() {
   const draft = JSON.parse(JSON.stringify(board));
-  const tabs = ['axes', 'buckets', 'types', 'priority', 'team'];
-  let tab = 'axes';
+  const tabs = ['scales', 'types', 'calc', 'team']; // UX review: six tabs became four
+  const PARTS = { scales: ['axes', 'buckets'], types: ['types'], calc: ['priority', 'helpers'], team: ['team'] };
+  let tab = 'scales';
   const body = h('div', { class: 'vet-settings' });
   const tabBar = h('div', { class: 'vet-tabs', role: 'tablist' });
   const pane = h('div', { class: 'vet-tab-pane', role: 'tabpanel' });
@@ -806,6 +1211,10 @@ function openSettings() {
   const name = (ax, key) => (ax.label || {})[LOC] || (ax.label || {})[draft.lang] || Object.values(ax.label || {})[0] || t('axis.' + key);
   const drawPane = () => {
     pane.replaceChildren();
+    const parts = PARTS[tab];
+    for (const part of parts) { if (parts.length > 1) pane.append(h('h3', { class: 'vet-set-h', text: t('set.' + part) })); drawPart(part); }
+  };
+  const drawPart = (tab) => {
     if (tab === 'axes') {
       pane.append(h('div', { class: 'vet-row vet-presets' }, h('span', { text: t('set.presets') }), ['effortMoney', 'valueEffort', 'moneyMoney', 'riskBenefit', 'base'].map((p) => btn(t('preset.' + p), () => {
         const keep = board; board = draft; preset(p); board = keep;
@@ -872,6 +1281,8 @@ function openSettings() {
     } else if (tab === 'priority') {
       for (const k of ['ratio', 'difference', 'out']) pane.append(h('label', { class: 'vet-radio' }, h('input', { type: 'radio', name: 'vet-prio', value: k, checked: draft.priority === k || null, onchange: () => { draft.priority = k; } }),
         h('span', {}, h('strong', { text: t('set.priority.' + k) }), h('small', { text: t('set.priority.' + k + 'Hint') }))));
+    } else if (tab === 'helpers') {
+      helperSettings(draft, pane, drawPane);
     } else {
       if (SHARE || team) pane.append(h('p', { text: t(team ? 'set.teamOn' : 'set.teamOff') }), team ? btn(t('share'), () => { openShare(); }, { icon: 'share', cls: 'vet-btn-primary' }) : btn(t('share'), () => shareSolo(), { icon: 'share', cls: 'vet-btn-primary' }));
     }
@@ -895,12 +1306,63 @@ function openSettings() {
         ax.buckets = C.normalizeBuckets(ax, ax.buckets);
       }
       board = draft;
+      C.touchEstimates(); // values were rescaled in place above
+      board.items.forEach((it) => applyFormula(it)); // new or changed formulas move the items that were not set by hand
     }, { noScale: true });
     d.closeNow();
     if (outside) {
       const d2 = dialog(t('set.outsideTitle'), h('p', { text: t('set.outside', { n: outside }) }), [btn(t('set.keep'), () => { d2.closeNow(); apply(false); }), btn(t('set.rescale'), () => { d2.closeNow(); apply(true); }, { cls: 'vet-btn-primary' })]);
     } else apply(false);
   }, { cls: 'vet-btn-primary' })], { wide: true });
+}
+
+/** Settings tab "Metrics and formulas" (HP-6 ... HP-10): templates, the metric list, a formula per axis with a check and a sample. */
+function helperSettings(draft, pane, redraw) {
+  draft.metrics = draft.metrics || []; draft.formulas = draft.formulas || [];
+  const f = (label, input, hint) => h('label', { class: 'vet-field' }, h('span', { text: label }), input, hint ? h('small', { text: hint }) : null);
+  pane.append(h('p', { class: 'vet-hint', text: t('hp.intro') }),
+    h('div', { class: 'vet-row vet-presets' }, h('span', { text: t('hp.templates') }), Object.keys(HP.FORMULA_TEMPLATES).map((k) => btn(t('hp.tpl.' + k), () => {
+      const tp = structuredClone(HP.FORMULA_TEMPLATES[k]);
+      const have = new Set(draft.metrics.map((m) => m.key));
+      tp.metrics.forEach((m) => { if (!have.has(m.key)) draft.metrics.push(m); });
+      draft.formulas = tp.formulas;
+      redraw();
+    }, { cls: 'vet-btn-sm' }))));
+  const rows = draft.metrics.map((m, i) => h('tr', {},
+    h('td', {}, h('input', { value: m.key, maxlength: '24', 'aria-label': t('hp.key'), onchange: (e) => { const v = e.target.value.trim().replace(/[^\p{L}\p{N}_]/gu, '_'); if (/^[\p{L}_]/u.test(v)) m.key = v; else e.target.value = m.key; } })),
+    h('td', {}, h('input', { value: metricName(m) === m.key ? '' : metricName(m), maxlength: '60', 'aria-label': t('hp.name'), onchange: (e) => { m.name = { ...(m.name || {}), [LOC]: e.target.value.trim() }; } })),
+    h('td', {}, h('input', { value: m.unit || '', maxlength: '20', 'aria-label': t('set.unit'), onchange: (e) => { m.unit = e.target.value.trim(); } })),
+    h('td', {}, btn('', () => { draft.metrics.splice(i, 1); redraw(); }, { icon: 'trash', title: t('delete'), cls: 'vet-btn-icon' }))));
+  pane.append(h('fieldset', { class: 'vet-fieldset' }, h('legend', { text: t('hp.metrics') }),
+    rows.length ? h('table', { class: 'vet-table is-small' }, h('thead', {}, h('tr', {}, [t('hp.key'), t('hp.name'), t('set.unit'), ''].map((x) => h('th', { text: x })))), h('tbody', {}, rows)) : h('p', { class: 'vet-hint', text: t('hp.noMetrics') }),
+    h('div', { class: 'vet-row' }, btn(t('hp.addMetric'), () => { let n = draft.metrics.length + 1; while (draft.metrics.some((m) => m.key === 'm' + n)) n++; draft.metrics.push({ key: 'm' + n, name: {}, unit: '' }); redraw(); }, { icon: 'plus', cls: 'vet-btn-sm' }))));
+  for (const key of ['out', 'in']) {
+    if (key === 'in' && draft.priority === 'out') continue;
+    let fm = draft.formulas.find((x) => x.axis === key);
+    if (!fm) { fm = { axis: key, expr: '', map: { kind: 'direct' } }; draft.formulas.push(fm); }
+    fm.map = fm.map || { kind: 'direct' };
+    const check = h('p', { class: 'vet-small', 'aria-live': 'polite' });
+    const show = () => { // HP-7: errors with the position, unknown names, a sample with every metric = 1
+      check.className = 'vet-small';
+      if (!fm.expr.trim()) { check.textContent = t('hp.noFormula'); return; }
+      try {
+        const ast = HP.parseFormula(fm.expr);
+        const known = new Set([...draft.metrics.map((m) => m.key), 'goalWeight']);
+        const unknown = [...HP.formulaVars(ast)].filter((v) => !known.has(v));
+        if (unknown.length) { check.className = 'vet-error'; check.textContent = t('hp.unknown', { names: unknown.join(', ') }); return; }
+        const vars = Object.fromEntries([...known].map((k) => [k, 1]));
+        const raw = HP.evalFormula(ast, vars);
+        check.textContent = t('hp.sample', { raw: raw === null ? '—' : C.fmtNum(raw, LANG, false), v: raw === null ? '—' : C.fmtNum(HP.mapToScale(raw, draft.axes[key], fm.map), LANG, false) });
+      } catch (e) { check.className = 'vet-error'; check.textContent = t('hp.err.' + (e.code || 'char'), { pos: (e.pos ?? 0) + 1 }); }
+    };
+    const expr = h('input', { value: fm.expr, maxlength: '300', spellcheck: 'false', class: 'vet-mono', placeholder: 'reach * impact * confidence', oninput: (e) => { fm.expr = e.target.value; show(); } });
+    const kind = h('select', { onchange: (e) => { fm.map.kind = e.target.value; redraw(); } }, ['direct', 'linear', 'log'].map((k) => h('option', { value: k, selected: fm.map.kind === k || null, text: t('hp.map.' + k) })));
+    const num = (prop) => h('input', { type: 'number', step: 'any', value: fm.map[prop] ?? '', onchange: (e) => { fm.map[prop] = e.target.value === '' ? undefined : Number(e.target.value); show(); } });
+    pane.append(h('fieldset', { class: 'vet-fieldset' }, h('legend', { text: t('hp.formulaFor', { axis: (draft.axes[key].label || {})[LOC] || axisName(key) }) }),
+      f(t('hp.expr'), expr, t('hp.exprHint')), check,
+      h('div', { class: 'vet-field-row' }, f(t('hp.map'), kind), fm.map.kind === 'direct' ? null : f(t('hp.lo'), num('lo')), fm.map.kind === 'direct' ? null : f(t('hp.hi'), num('hi')))));
+    show();
+  }
 }
 
 /** IT-3: a type with items is deleted only after moving or deleting its items; the last type stays. */
@@ -925,41 +1387,93 @@ function download(text, name, mime) {
   dirty = false;
 }
 
+const XLSX = () => import(new URL('../../assets/aevri-xlsx.js?v=' + V, import.meta.url).href); // lazy (NF-3)
+const SCHEMA = () => import(new URL('../../assets/aevri-schema.js?v=' + V, import.meta.url).href);
+const PICTURE = () => import('./vet-picture.js?v=' + V);
+
+/** Human-readable "Settings" sheet (IO-11): a table for people, then the full configuration JSON for the restore. */
+function settingsRows(cfg) {
+  const rows = [[t('xl.setting'), t('xl.value')]];
+  for (const key of ['out', 'in']) {
+    const a = board.axes[key];
+    rows.push([axisName(key), a.unit || ''],
+      [axisName(key) + ' · ' + t('xl.scale'), `${C.fmtNum(a.scale.min, LANG, false)} … ${C.fmtNum(a.scale.max, LANG, false)}, ${t('set.step').toLowerCase()} ${C.fmtNum(a.scale.step, LANG, false)}`],
+      [axisName(key) + ' · ' + t('set.buckets'), a.buckets.map((b) => `${b.label} ${C.fmtNum(b.from, LANG, false)}…${C.fmtNum(b.to, LANG, false)}`).join('; ')]);
+  }
+  rows.push([t('set.priority'), t('set.priority.' + board.priority)], [t('set.types'), board.itemTypes.map((x) => typeName(x.id)).join('; ')], [], [t('xl.json'), ''],
+    [C.CONFIG_CELL, ...C.configCells(cfg)]);
+  return rows;
+}
+
+async function exportFile(scope, list, goals) {
+  if (scope === 'board') return download(JSON.stringify(board, null, 2), C.fileName(board, 'vet.json'), 'application/json');
+  if (scope === 'config') return download(JSON.stringify(C.configOf(board, goals), null, 2), C.fileName(board, 'vet-config.json'), 'application/json');
+  if (scope === 'items') return download(JSON.stringify(C.itemsDoc(board, list), null, 2), C.fileName(board, 'vet-items.json'), 'application/json');
+  if (scope === 'xlsx') { // FMT-xlsx: Elements, Participant estimates, Goals, Settings
+    const { writeXlsx } = await XLSX();
+    const sheets = [{ name: t('xl.elements'), rows: C.itemRows(board, list, (id) => typeName(id)) }, { name: t('xl.estimates'), rows: C.estimateRows(board, list) }];
+    if (goals) sheets.push({ name: t('xl.goals'), rows: C.goalRows(board) });
+    sheets.push({ name: t('xl.settings'), rows: settingsRows(C.configOf(board, goals)), widths: [34, 90] });
+    return download(writeXlsx(sheets), C.fileName(board, 'xlsx'), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  }
+  if (scope === 'svg' || scope === 'png') { // FMT-png: the current 1D / 2D view
+    const P = await PICTURE();
+    const svg = P.boardSvg(board, { C, view: board.view, axisName, typeColor: (id) => C.typeById(board, id).color, lang: LANG, title: board.title || t('board.untitled'), xKey: xKey(), yKey: yKey(), items: list });
+    if (scope === 'svg') return download(svg, C.fileName(board, 'svg'), 'image/svg+xml');
+    return download(await P.svgToPng(svg, 2), C.fileName(board, 'png'), 'image/png');
+  }
+  return download(C.toCSV(board, list, (id) => typeName(id), scope === 'csvx'), C.fileName(board, 'csv'), 'text/csv');
+}
+
 function openExport() {
   let scope = 'board', only = false, goals = true;
   const items = () => C.sortedItems(board, only ? visibleItems() : board.items.filter((x) => !x.isReference));
   const opt = (k, label, hint) => h('label', { class: 'vet-radio' }, h('input', { type: 'radio', name: 'vet-exp', value: k, checked: scope === k || null, onchange: () => { scope = k; } }), h('span', {}, h('strong', { text: label }), h('small', { text: hint })));
   const body = h('div', { class: 'vet-form' },
     opt('board', t('exp.board'), '.vet.json'), opt('config', t('exp.config'), '.vet-config.json'), opt('items', t('exp.items'), '.vet-items.json'),
-    opt('csv', 'CSV', t('exp.csv')), opt('csvx', t('exp.csvExcel'), t('exp.csvExcelHint')),
+    opt('xlsx', 'Excel (.xlsx)', t('exp.xlsx')), opt('csv', 'CSV', t('exp.csv')), opt('csvx', t('exp.csvExcel'), t('exp.csvExcelHint')),
+    opt('png', 'PNG', t('exp.picture')), opt('svg', 'SVG', t('exp.picture')),
     h('label', { class: 'vet-check' }, h('input', { type: 'checkbox', onchange: (e) => { only = e.target.checked; } }), h('span', { text: t('exp.onlyShown') })),
-    h('label', { class: 'vet-check' }, h('input', { type: 'checkbox', checked: true, onchange: (e) => { goals = e.target.checked; } }), h('span', { text: t('exp.withGoals') })),
-    h('p', { class: 'vet-hint', text: t('exp.later') }));
-  const d = dialog(t('export'), body, [btn(t('cancel'), () => d.closeNow()), btn(t('export'), () => {
-    if (scope === 'board') download(JSON.stringify(board, null, 2), C.fileName(board, 'vet.json'), 'application/json');
-    else if (scope === 'config') download(JSON.stringify(C.configOf(board, goals), null, 2), C.fileName(board, 'vet-config.json'), 'application/json');
-    else if (scope === 'items') download(JSON.stringify(C.itemsDoc(board, items()), null, 2), C.fileName(board, 'vet-items.json'), 'application/json');
-    else download(C.toCSV(board, items(), (id) => typeName(id), scope === 'csvx'), C.fileName(board, 'csv'), 'text/csv');
-    d.closeNow();
+    h('label', { class: 'vet-check' }, h('input', { type: 'checkbox', checked: true, onchange: (e) => { goals = e.target.checked; } }), h('span', { text: t('exp.withGoals') })));
+  const d = dialog(t('export'), body, [btn(t('cancel'), () => d.closeNow()), btn(t('export'), async () => {
+    try { await exportFile(scope, items(), goals); d.closeNow(); if (TV) TV.note('export'); } catch (e) { toast(t('exp.failed')); }
   }, { icon: 'download', cls: 'vet-btn-primary' })]);
 }
 
+/** The lines of a configuration change summary (IO-12). */
+function diffLines(cfg) {
+  const ds = C.configDiff(board, cfg);
+  if (!ds.length) return [h('li', { text: t('cfg.d.none') })];
+  return ds.map((x) => h('li', { text: t('cfg.d.' + x.key, { axis: x.axis ? axisName(x.axis) : '', n: x.n ?? 0, added: x.added ?? 0, removed: x.removed ?? 0 }) }));
+}
+
 function openImport() {
-  const file = h('input', { type: 'file', accept: '.json,.csv,.tsv,.txt,application/json,text/csv' });
+  const file = h('input', { type: 'file', accept: '.json,.csv,.tsv,.txt,.xlsx,application/json,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
   const info = h('div', { class: 'vet-preview' });
   let handler = null;
   const ok = btn(t('import'), () => { if (handler) handler(); }, { cls: 'vet-btn-primary', disabled: true });
+  const fail = (key, extra) => info.append(h('p', { class: 'vet-error', text: t(key) + (extra ? ' ' + extra : '') }));
   file.addEventListener('change', async () => {
     info.replaceChildren(); ok.disabled = true; handler = null;
     const f = file.files[0];
     if (!f) return;
-    if (f.size > 10 * 1024 * 1024) { info.append(h('p', { class: 'vet-error', text: t('imp.tooBig') })); return; } // IO-8
-    const text = await f.text();
-    let doc = null;
-    if (/\.json$/i.test(f.name) || text.trim().startsWith('{')) { try { doc = JSON.parse(text); } catch (e) { info.append(h('p', { class: 'vet-error', text: t('imp.invalid') })); return; } }
+    if (f.size > 10 * 1024 * 1024) { fail('imp.tooBig'); return; } // IO-8
+    let doc = null, grid = null, xlCfg = null;
+    if (/\.xlsx$/i.test(f.name)) { // IO-9 (the reference tool), IO-11 (our own file with the Settings sheet)
+      let sheets;
+      try { sheets = await (await XLSX()).readXlsx(await f.arrayBuffer()); } catch (e) { fail('imp.badXlsx'); return; }
+      for (const s of sheets) xlCfg = xlCfg || C.configFromRows(s.rows);
+      const list = sheets.find((s) => { const head = s.rows.find((r) => r.length) || []; const m = C.autoMap(head); return m.title !== undefined || m.code !== undefined; });
+      grid = list ? list.rows : (sheets[0] ? sheets[0].rows : []);
+      if (xlCfg && (!list || list.rows.length < 2)) doc = xlCfg; // only settings: the configuration branch
+    } else {
+      const text = await f.text();
+      if (/\.json$/i.test(f.name) || text.trim().startsWith('{')) { try { doc = JSON.parse(text); } catch (e) { fail('imp.invalid'); return; } }
+      else grid = text;
+    }
     if (doc && doc.kind === 'vet-config') {
       let mode = 'apply';
-      info.append(h('p', { text: t('imp.config') }),
+      info.append(h('p', { text: t('imp.config') }), h('p', { class: 'vet-small', text: t('cfg.d.title') }), h('ul', { class: 'vet-diff' }, diffLines(doc)),
         h('label', { class: 'vet-radio' }, h('input', { type: 'radio', name: 'vet-cfg', checked: true, onchange: () => { mode = 'apply'; } }), h('span', { text: t('imp.applyCurrent') })),
         h('label', { class: 'vet-radio' }, h('input', { type: 'radio', name: 'vet-cfg', onchange: () => { mode = 'new'; } }), h('span', { text: t('imp.newFromConfig') })));
       handler = () => {
@@ -967,63 +1481,104 @@ function openImport() {
           if (mode === 'apply') change(() => C.applyConfig(board, structuredClone(doc)));
           else change(() => { const b = C.newBoard(board.title); C.applyConfig(b, structuredClone(doc)); board = b; selected = null; picked.clear(); });
           d.closeNow(); toast(t('imp.done'), () => undo());
-        } catch (e) { info.append(h('p', { class: 'vet-error', text: e.message === 'newer' ? t('imp.newer') : t('imp.invalid') })); }
+        } catch (e) { fail(e.message === 'newer' ? 'imp.newer' : 'imp.invalid'); }
       };
       ok.disabled = false;
       return;
     }
     if (doc && doc.kind !== 'vet-items' && Array.isArray(doc.items) && doc.axes) {
+      const [maj] = String(doc.schemaVersion || '0').split('.').map(Number);
+      if (maj === 1) { // IO-3: the file is checked against contracts/board.schema.json before anything changes
+        const S = await SCHEMA(); const schema = await S.loadSchema('board.schema.json');
+        const errs = schema ? S.validate(schema, doc, { limit: 5 }) : [];
+        if (errs.length) { fail('imp.schema'); info.append(h('ul', { class: 'vet-diff' }, errs.map((e) => h('li', { text: `${e.path} - ${e.rule}` })))); return; }
+      }
       info.append(h('p', { text: t('imp.board', { n: doc.items.length }) }));
       handler = () => {
         try { const b = C.importBoard(doc); change(() => { board = b; selected = null; picked.clear(); }); d.closeNow(); toast(t('imp.done'), () => undo()); }
-        catch (e) { info.append(h('p', { class: 'vet-error', text: e.message === 'newer' ? t('imp.newer') : t('imp.invalid') })); }
+        catch (e) { fail(e.message === 'newer' ? 'imp.newer' : 'imp.invalid'); }
       };
       ok.disabled = false;
       return;
     }
-    // a list: .vet-items.json or CSV / TSV (IO-4 ... IO-9)
-    let rows;
-    if (doc && Array.isArray(doc.items)) rows = doc.items.map((it, n) => ({ code: it.code || '', title: it.title || it.code || '', description: it.description || '', type: '', typeId: it.typeId, polarity: it.polarity || '', out: it.out ?? null, in: it.in ?? null, tags: it.tags || [], externalId: it.externalId || '', line: n + 1, errors: it.title || it.code ? [] : ['title'] }));
-    else { const p = C.parseTable(text); if (p.error) { info.append(h('p', { class: 'vet-error', text: t('imp.noColumns') })); return; } rows = p.rows; }
-    if (rows.length > 5000) { info.append(h('p', { class: 'vet-error', text: t('imp.tooMany') })); return; }
-    let dupMode = 'skip';
-    const byExt = new Map(board.items.filter((x) => x.externalId).map((x) => [x.externalId, x]));
-    const byCode = new Map(board.items.map((x) => [String(x.code).toLowerCase(), x]));
-    const dups = rows.filter((r) => (r.externalId && byExt.has(r.externalId)) || (r.code && byCode.has(r.code.toLowerCase()))).length;
-    const bad = rows.filter((r) => r.errors.length);
-    info.append(h('p', { text: t('imp.list', { n: rows.length }) }),
-      h('table', { class: 'vet-table is-small' }, h('thead', {}, h('tr', {}, ['#', t('col.code'), t('col.title'), axisName('out'), axisName('in')].map((x) => h('th', { text: x })))),
-        h('tbody', {}, rows.slice(0, 20).map((r) => h('tr', { class: r.errors.length ? 'is-error' : '' }, h('td', { text: r.line }), h('td', { text: r.code }), h('td', { text: r.title }), h('td', { text: r.out ?? '' }), h('td', { text: r.in ?? '' }))))),
-      bad.length ? h('p', { class: 'vet-error', text: t('imp.errors', { n: bad.length, lines: bad.slice(0, 10).map((r) => r.line).join(', ') }) }) : null,
-      dups ? h('div', { class: 'vet-form' }, h('p', { text: t('imp.dups', { n: dups }) }), ['skip', 'update', 'add'].map((k) => h('label', { class: 'vet-radio' }, h('input', { type: 'radio', name: 'vet-dup', checked: k === 'skip' || null, onchange: () => { dupMode = k; } }), h('span', { text: t('imp.dup.' + k) })))) : null);
-    handler = () => {
-      const typeMap = new Map(board.itemTypes.map((ty) => [typeName(ty.id).toLowerCase(), ty.id]));
-      let added = 0, updated = 0;
-      change(() => {
-        const taken = new Set();
-        for (const r of rows) {
-          if (r.errors.length) continue;
-          let typeId = r.typeId && board.itemTypes.some((x) => x.id === r.typeId) ? r.typeId : null;
-          if (!typeId && r.type) {
-            typeId = typeMap.get(r.type.toLowerCase());
-            if (!typeId) { const nt = { id: 't-' + C.uuidv7().slice(-8), name: { [LOC]: r.type }, pluralName: { [LOC]: r.type }, prefix: r.type.replace(/[^\p{L}]/gu, '').slice(0, 4).toUpperCase() || 'EL', color: C.PALETTE[board.itemTypes.length % C.PALETTE.length], icon: 'dot', defaultPolarity: r.polarity === 'anti' ? 'anti' : 'value' }; board.itemTypes.push(nt); typeMap.set(r.type.toLowerCase(), nt.id); typeId = nt.id; }
-          }
-          typeId = typeId || board.itemTypes[0].id;
-          const dup = (r.externalId && byExt.get(r.externalId)) || (r.code && byCode.get(r.code.toLowerCase()));
-          let it;
-          if (dup && dupMode === 'skip') continue;
-          if (dup && dupMode === 'update') { it = dup; Object.assign(it, { title: r.title || it.title, description: r.description || it.description, typeId, polarity: r.polarity === 'anti' || r.polarity === 'value' ? r.polarity : it.polarity, tags: r.tags.length ? r.tags : it.tags, externalId: r.externalId || it.externalId }); updated++; }
-          else { it = C.makeItem(board, { title: r.title, code: dup ? '' : r.code, description: r.description, typeId, polarity: r.polarity === 'anti' ? 'anti' : r.polarity === 'value' ? 'value' : undefined, tags: r.tags, externalId: r.externalId, taken }); taken.add(it.code); board.items.push(it); added++; }
-          if (r.out !== null) C.setEstimate(board, it.id, 'out', r.out, 'import');
-          if (r.in !== null) C.setEstimate(board, it.id, 'in', r.in, 'import');
+    // a list: .vet-items.json, CSV / TSV or a spreadsheet (IO-4 ... IO-9)
+    if (doc && Array.isArray(doc.items)) {
+      const rows = doc.items.map((it, n) => ({ code: it.code || '', title: it.title || it.code || '', description: it.description || '', type: '', typeId: it.typeId, polarity: it.polarity || '', out: it.out ?? null, in: it.in ?? null, tags: it.tags || [], externalId: it.externalId || '', line: n + 1, errors: it.title || it.code ? [] : ['title'] }));
+      listStep(rows, null, null);
+    } else if (grid !== null) {
+      const cells = typeof grid === 'string' ? null : grid;
+      listStep(null, cells, typeof grid === 'string' ? grid : null);
+    } else fail('imp.invalid');
+    function listStep(fixedRows, cells, text) {
+      let map = null, mapOpen = false; // null = automatic (IO-4)
+      const parse = () => (fixedRows ? { rows: fixedRows, header: [], map: {} } : cells ? C.parseGrid(cells, map) : C.parseTable(text, map));
+      let applyCfg = !!xlCfg;
+      const typeChoice = new Map(); // unknown type name -> existing type id or '' (create new)
+      const draw = () => {
+        info.replaceChildren(); ok.disabled = true;
+        const p = parse();
+        if (!map) map = { ...p.map };
+        if (!fixedRows && p.header.length) { // manual column mapping (IO-4)
+          const sel = (field) => {
+            const s = h('select', { 'aria-label': t('imp.field.' + field), onchange: (e) => { if (e.target.value === '') delete map[field]; else map[field] = +e.target.value; draw(); } },
+              h('option', { value: '', text: '-' }), p.header.map((name, i) => h('option', { value: String(i), text: name || colLetter(i), selected: map[field] === i || null })));
+            return h('label', { class: 'vet-field' }, h('span', { text: t('imp.field.' + field) }), s);
+          };
+          info.append(h('details', { class: 'vet-map', open: p.error || mapOpen ? true : null, ontoggle: (e) => { mapOpen = e.target.open; } }, h('summary', { text: t('imp.mapping') }), h('div', { class: 'vet-map-grid' }, C.IMPORT_FIELDS.map(sel))));
         }
-      });
-      d.closeNow(); toast(t('imp.listDone', { added, updated }), () => undo());
-    };
-    ok.disabled = !rows.some((r) => !r.errors.length);
+        if (p.error) { fail('imp.noColumns'); return; }
+        const rows = p.rows;
+        if (rows.length > 5000) { fail('imp.tooMany'); return; }
+        let dupMode = 'skip';
+        const byExt = new Map(board.items.filter((x) => x.externalId).map((x) => [x.externalId, x]));
+        const byCode = new Map(board.items.map((x) => [String(x.code).toLowerCase(), x]));
+        const dups = rows.filter((r) => (r.externalId && byExt.has(r.externalId)) || (r.code && byCode.has(r.code.toLowerCase()))).length;
+        const bad = rows.filter((r) => r.errors.length);
+        const known = new Map(board.itemTypes.map((ty) => [typeName(ty.id).toLowerCase(), ty.id]));
+        const unknown = [...new Set(rows.filter((r) => r.type && !known.has(r.type.toLowerCase())).map((r) => r.type))];
+        info.append(...[h('p', { text: t('imp.list', { n: rows.length }) }),
+          h('table', { class: 'vet-table is-small' }, h('thead', {}, h('tr', {}, ['#', t('col.code'), t('col.title'), axisName('out'), axisName('in')].map((x) => h('th', { text: x })))),
+            h('tbody', {}, rows.slice(0, 20).map((r) => h('tr', { class: r.errors.length ? 'is-error' : '' }, h('td', { text: r.line }), h('td', { text: r.code }), h('td', { text: r.title }), h('td', { text: r.out ?? '' }), h('td', { text: r.in ?? '' }))))),
+          bad.length ? h('p', { class: 'vet-error', text: t('imp.errors', { n: bad.length, lines: bad.slice(0, 10).map((r) => r.line).join(', ') }) }) : null,
+          unknown.length ? h('div', { class: 'vet-form' }, h('p', { text: t('imp.types', { n: unknown.length }) }), unknown.slice(0, 30).map((name) => h('label', { class: 'vet-field' }, h('span', { text: name }),
+            h('select', { onchange: (e) => typeChoice.set(name, e.target.value) }, h('option', { value: '', text: t('imp.typeNew') }), board.itemTypes.map((ty) => h('option', { value: ty.id, text: typeName(ty.id), selected: typeChoice.get(name) === ty.id || null })))))) : null,
+          dups ? h('div', { class: 'vet-form' }, h('p', { text: t('imp.dups', { n: dups }) }), ['skip', 'update', 'add'].map((k) => h('label', { class: 'vet-radio' }, h('input', { type: 'radio', name: 'vet-dup', checked: k === 'skip' || null, onchange: () => { dupMode = k; } }), h('span', { text: t('imp.dup.' + k) })))) : null,
+          xlCfg ? h('div', { class: 'vet-form' }, h('label', { class: 'vet-check' }, h('input', { type: 'checkbox', checked: applyCfg || null, onchange: (e) => { applyCfg = e.target.checked; } }), h('span', { text: t('imp.xlsxCfg') })),
+            h('ul', { class: 'vet-diff' }, diffLines(xlCfg))) : null].filter(Boolean));
+        handler = () => {
+          let added = 0, updated = 0;
+          change(() => {
+            if (applyCfg && xlCfg) C.applyConfig(board, structuredClone(xlCfg));
+            const typeMap = new Map(board.itemTypes.map((ty) => [typeName(ty.id).toLowerCase(), ty.id]));
+            const taken = new Set();
+            for (const r of rows) {
+              if (r.errors.length) continue;
+              let typeId = r.typeId && board.itemTypes.some((x) => x.id === r.typeId) ? r.typeId : null;
+              if (!typeId && r.type) {
+                typeId = typeMap.get(r.type.toLowerCase()) || typeChoice.get(r.type) || null;
+                if (!typeId) { const nt = { id: 't-' + C.uuidv7().slice(-8), name: { [LOC]: r.type }, pluralName: { [LOC]: r.type }, prefix: r.type.replace(/[^\p{L}]/gu, '').slice(0, 4).toUpperCase() || 'EL', color: C.PALETTE[board.itemTypes.length % C.PALETTE.length], icon: 'dot', defaultPolarity: r.polarity === 'anti' ? 'anti' : 'value' }; board.itemTypes.push(nt); typeMap.set(r.type.toLowerCase(), nt.id); typeId = nt.id; }
+              }
+              typeId = typeId || board.itemTypes[0].id;
+              const dup = (r.externalId && byExt.get(r.externalId)) || (r.code && byCode.get(r.code.toLowerCase()));
+              let it;
+              if (dup && dupMode === 'skip') continue;
+              if (dup && dupMode === 'update') { it = dup; Object.assign(it, { title: r.title || it.title, description: r.description || it.description, typeId, polarity: r.polarity === 'anti' || r.polarity === 'value' ? r.polarity : it.polarity, tags: r.tags.length ? r.tags : it.tags, externalId: r.externalId || it.externalId }); updated++; }
+              else { it = C.makeItem(board, { title: r.title, code: dup ? '' : r.code, description: r.description, typeId, polarity: r.polarity === 'anti' ? 'anti' : r.polarity === 'value' ? 'value' : undefined, tags: r.tags, externalId: r.externalId, taken }); taken.add(it.code); board.items.push(it); added++; }
+              if (r.out !== null) setEst(it.id, 'out', r.out, 'import');
+              if (r.in !== null) setEst(it.id, 'in', r.in, 'import');
+            }
+          });
+          d.closeNow(); toast(t('imp.listDone', { added, updated }), () => undo());
+        };
+        ok.disabled = !rows.some((r) => !r.errors.length);
+      };
+      draw();
+    }
   });
   const d = dialog(t('import'), h('div', { class: 'vet-form' }, h('p', { class: 'vet-hint', text: t('imp.hint') }), file, info), [btn(t('cancel'), () => d.closeNow()), ok], { wide: true });
 }
+
+const colLetter = (i) => { let s = ''; i += 1; while (i > 0) { const m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = Math.floor((i - 1) / 26); } return s; };
 
 // ---------- toasts ----------
 
@@ -1043,7 +1598,10 @@ document.addEventListener('keydown', (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !inField) { e.preventDefault(); if (e.shiftKey) redo(); else undo(); }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y' && !inField) { e.preventDefault(); redo(); }
 });
-window.addEventListener('beforeunload', (e) => { if (dirty && board.items.length) { e.preventDefault(); e.returnValue = ''; } }); // MO-3
+document.addEventListener('keydown', (e) => { // "?" opens the shortcuts when no field has the focus
+  if (e.key === '?' && !/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) && !e.target.isContentEditable && !document.querySelector('dialog[open]')) { e.preventDefault(); openKeys(); }
+});
+window.addEventListener('beforeunload', (e) => { if (dirty) { e.preventDefault(); e.returnValue = ''; } }); // MO-3: settings-only changes count too
 let rz = null;
 window.addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(renderScales, 150); });
 
@@ -1307,7 +1865,24 @@ if (root.dataset.board) { // team board (MO-6 ... MO-15)
   if (saved) { try { board = C.hydrateBoard(JSON.parse(saved)); } catch (e) { board = C.newBoard(''); } if (root.dataset.user) setTimeout(() => shareSolo(), 0); }
   history.replaceState(null, '', location.pathname);
 }
+if (!failed && root.dataset.telemetry && !bridge.on && !bridge.session) {
+  try {
+    const M = await import('./vet-telemetry.js?v=' + V);
+    TV = M.startTelemetry({ root, t, h, btn, endpoint: root.dataset.telemetry, lang: LOC, about: aboutData, stats: () => {
+      const mine = board.estimates.filter((e) => e.participantId === C.me());
+      return { mode: team ? 'team' : 'solo', items: board.items.filter((x) => !x.isReference).length, participants: team ? (team.view.participants || []).length : 1,
+        estimates: mine.length, estimated: new Set(mine.filter((e) => e.axis === 'out').map((e) => e.itemId)).size,
+        helpers: { references: refItems().length > 0, formulas: !!(HP.formulaOf(board, 'out') || HP.formulaOf(board, 'in')), goals: (board.goals || []).length > 0 } };
+    } });
+  } catch (e) { TV = null; } // the editor works without it
+}
 if (!failed) render();
 root.classList.add('is-ready');
-if (bridge.on) bridgePost('vet.ready', { capabilities: ['vss-board-snapshot-v1', 'ledger-receiver-v1'] }); // VS-6; LG-2 receiver mode for the Value Wallet
+if (bridge.on) {
+  bridgePost('vet.ready', { capabilities: ['vss-board-snapshot-v1', 'ledger-receiver-v1', 'resize-v1'] }); // VS-6; LG-2 receiver mode for the Value Wallet
+  let lastH = 0, rzT = null; // vet.resize: the content height, so a host that does not fill the screen can size the iframe
+  const sendH = () => { const hh = Math.ceil(document.documentElement.scrollHeight); if (Math.abs(hh - lastH) > 8) { lastH = hh; bridgePost('vet.resize', { height: hh }); } };
+  if (window.ResizeObserver) new ResizeObserver(() => { clearTimeout(rzT); rzT = setTimeout(sendH, 120); }).observe(document.body);
+  sendH();
+}
 window.VET = { get board() { return board; }, core: C }; // for support and tests in the console
